@@ -1,9 +1,11 @@
 import logging
 import json
 import zmq
+from pathlib import Path
 from typing import List, Callable, Union
 import data_processing
 import time
+import MonitoringProcessing
 
 logger = logging.getLogger("Server")
 
@@ -46,6 +48,31 @@ def RCWrite(socket:zmq.Socket, clients: List[bytes], addr : int, value: int, out
             output_func(f"Problem occured writing RC registers: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the RC response.")
+
+def RCMonitoring(socket:zmq.Socket, clients: List[bytes], registers: Union[List[int], str], batch:int, flag_acq:str, suffix: str, run_id: str, output_func: Callable[[str], None]):
+
+    command_rc_monitoring = {
+        "type": "rc_command",
+        "command": "rc_monitoring",
+        "regs": registers,
+    }
+    logger.info(f"Sending RC command to client: {command_rc_monitoring}")
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_rc_monitoring).encode("utf-8")])
+        try:
+            mon = socket.recv_multipart()
+            response = json.loads(mon[1].decode("utf-8"))
+            if mon[0] == client and response.get("response") == "rc_mon":
+                MonitoringProcessing.SaveDataCSV(client=client, data=response.get("result"), number=batch, flag_acq=flag_acq, suffix=suffix, run_id=run_id)
+    
+        except Exception as e:
+            output_func(f"Problem occured acquiring RC registers: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the RC response.")
+ 
+
+
 
 
 
@@ -146,6 +173,27 @@ def HVSetVoltage(socket:zmq.Socket, clients: List[bytes], port:str, channels:Uni
             output_func(f"HV set voltage problem occured: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the voltage set response.")
+
+def HVSetThreshold(socket:zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], threshold:int, output_func: Callable[[str], None]) -> None:
+
+    command_hv_set_threshold = {
+        "type": "hv_command",
+        "command": "set_threshold",
+        "port": port,
+        "channel": channels,
+        "threshold_set": threshold
+    }
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_hv_set_threshold).encode("utf-8")])
+        try:
+            threshold_set = socket.recv_multipart()
+            response_threshold = json.loads(threshold_set[1].decode("utf-8"))
+            if threshold_set[0] == client and response_threshold.get("response") == "hv_threshold_set":
+                output_func(f"It was possible to set the threshold for the following channels: {response_threshold.get('result')[0]}. \n It was not possible to set the threshold for the following channels: {response_threshold.get('result')[1]}")
+        except Exception as e:
+            output_func(f"HV set threshold problem occured: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the threshold set response.")
 
 
 def HVPowerOn(socket:zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], output_func: Callable[[str], None]) -> None:
@@ -255,7 +303,7 @@ def HVCalibration(socket:zmq.Socket, clients: List[bytes], port:str, channels:Un
     }
 
     for client in clients:
-        socket.send_multipart([clients, json.dumps(command_hv_calib).encode("utf-8")])
+        socket.send_multipart([client, json.dumps(command_hv_calib).encode("utf-8")])
         try:
             hv_calib = socket.recv_multipart()
             response_calib = json.loads(hv_calib[1].decode("utf-8"))
@@ -268,6 +316,60 @@ def HVCalibration(socket:zmq.Socket, clients: List[bytes], port:str, channels:Un
         except json.JSONDecodeError:
             output_func("Failed to decode the calibration response.")
 
+
+def HVGetSerialFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], batch:int, output_func: Callable[[str], None]) -> None:
+
+    output_func("Getting the serial numbers of the FEB and assoicating them with the corresponding channels")
+
+    command_hv_serial = {
+        "type": "hv_command",
+        "command": "hv_serial",
+        "channels": channels, 
+        "port": port
+    }
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_hv_serial).encode("utf-8")])
+        try:
+            hv_serial = socket.recv_multipart()
+            response_serial = json.loads(hv_serial[1].decode("utf-8"))
+            if hv_serial[0] == client and response_serial.get("response") == "hv_serial":
+                MonitoringProcessing.WriteSerialChannels(response_serial.get("result"), batch)
+                output_func("Serial Numbers of the channels selected acquired and stored successfully")
+            else:
+                output_func("It was not possible to get the serial numbers of the channels selected. See the client log for more details")
+        except Exception as e:
+            output_func(f"HV Serial Number problem occured: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the serial number response.")
+        
+def HVStartUp(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], baud: int, firmware:str, output_func: Callable[[str], None]) -> None:
+
+    output_func("Programming the FEBs")
+
+    command_hv_start_up = {
+        "type": "hv_command",
+        "command": "hv_prog_feb",
+        "channels": channels, 
+        "port": port,
+        "baud" : baud,
+        "firmware": firmware
+    }
+
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_hv_start_up).encode("utf-8")])
+        try:
+            hv_prog = socket.recv_multipart()
+            response_prog = json.loads(hv_prog[1].decode("utf-8"))
+            if hv_prog[0] == client and response_prog.get("response") == "hv_start_up":
+                output_func("It was possible to program all the FEBs")
+            else:
+                output_func("It was not possible to program all the FEBs selected. See the client log for more details")
+        except Exception as e:
+            output_func(f"HV Start Up problem occured: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the start up response.")
 
 ######################################
 #DMA COMMUNICATION FUNCTIONS#
@@ -291,21 +393,6 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], charge:data_proces
     time.sleep(2) #Waiting time to settle evproducer
 
     ######################
-    if suffix != "pedestal":
-        output_func("Checking signal integrity")
-        try: 
-            signal_status = charge.signal_integrity(duration=60)
-            if not signal_status:
-                output_func("Check the signal on the oscilloscope. Something is probably wrong")
-                return
-        except Exception as e:
-            output_func(f"Some problems occured checking signal integrity:{e}")
-
-        output_func("Checked signal intgrety. Waiting 2 seconds to start empting the FIFO")
-        time.sleep(2)
-    ######################
-
-    ######################
     output_func("Removing old data in the FIFO (30 seconds wait)")
     try: 
         charge.flush_fifo(duration=30)
@@ -326,5 +413,75 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], charge:data_proces
 
     time.sleep(0.1)
     RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
+    time.sleep(0.1)
 
+def SignalIntegrity(socket:zmq.Socket, clients: List[bytes], charge:data_processing.DataProcess,
+                    output_func: Callable[[str], None]) -> None:
+    
+    output_func("Cheching Signal Integrity...")
+    RCWrite(socket=socket, clients=clients, addr=19, value=127, output_func=output_func)
+
+    time.sleep(0.1)
+    output_func("Waiting time to settle evproducer")
+    time.sleep(2) #Waiting time to settle evproducer
+
+    ######################
+    output_func("Removing old data in the FIFO (30 seconds wait)")
+    try: 
+        charge.flush_fifo(duration=30)
+    except Exception as e:
+        output_func(f"Some problems occured empting the FIFO:{e}")
+
+    output_func("Emptied FIFO. Waiting 3 seconds to check the signal integrity")
+    time.sleep(3)
+    ######################
+
+    ######################
+    try: 
+        signal_status = charge.signal_integrity(duration=60)
+        if not signal_status:
+            output_func("Check the signal on the oscilloscope. Something is probably wrong")
+            return False
+    except Exception as e:
+        output_func(f"Some problems occured checking signal integrity:{e}")
+        return False
+
+    output_func("Checked signal intgrety. Waiting 1 seconds to settle everything")
+    time.sleep(1)
+    ######################
+
+    RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)
+    time.sleep(0.1)
+    return True
+
+
+######################################
+#MONITORING#
+######################################
+
+
+def Monitoring(socket: zmq.Socket, clients: List[bytes], rc_flag: int, hv_flag: int, mon_flag: int, batch: Union[int,str], flag_acq: str, suffix: str, run_id: str, output_func: Callable[[str], None]):
+
+    command_monitoring = {
+        "type": "mon_command",
+        "command": "monitoring",
+        "rc_flag": rc_flag,
+        "hv_flag": hv_flag,
+        "mon_flag": mon_flag,
+    }
+    logger.info(f"Sending RC command to client: {command_monitoring}")
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_monitoring).encode("utf-8")])
+        try:
+            mon_all = socket.recv_multipart()
+            response = json.loads(mon_all[1].decode("utf-8"))
+            if mon_all[0] == client and response.get("response") == "monitoring":
+                mon_data = response.get("result")
+                for i in mon_data:  
+                    MonitoringProcessing.SaveDataCSV(client=client, data=i, number=batch, flag_acq=flag_acq, suffix=suffix, run_id=run_id)
+        except Exception as e:
+            output_func(f"Problem occured acquiring RC registers: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the RC response.")
 

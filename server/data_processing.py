@@ -34,7 +34,11 @@ folder_acq = {
     "spe" : "single_photoelectron/",
     "gain" : "gain_curve/",
     "wheels_char" : "wheels_characterisation/",
-    "fiber_char" : "fiber_characterisation/"
+    "fiber_char" : "fiber_characterisation/",
+    "threshold": "threshold_calibration/",
+    "threshold_dark": "threshold_calibration_dark/",
+    "threshold_scan": "threshold_scan/",
+    "spe_equal": "spe_equal_gains/"
 }
 
 class DataProcess:
@@ -100,19 +104,23 @@ class DataProcess:
 
         logger.info("Everything has been cleared")
 
-    @staticmethod
-    def get_file_path(acq_type, number):
-        base_folder = Path.home() / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(acq_type, "unknown") / DataProcess.generate_timestamp_folder()
-        i = 1
-        folder = base_folder / f"acq_{i}"
-        while folder.exists():
-            i += 1
-            folder = base_folder / f"acq_{i}"
-        return folder
-    
     def string_no_space(self, string):
         return string.replace(" ", "")
+    
+    def get_folder_path(self, flag_acq = "", run_id = None, number = None):
 
+        base_folder = Path("/swgo") / "Test"/ "SWGO_Testbench" / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
+        if run_id is not None:
+            run_folder = base_folder / f"run_{run_id}"
+        else:
+            i = 1
+            run_folder = base_folder / f"acq_{i}"
+            while run_folder.exists():
+                i += 1
+                run_folder = base_folder / f"acq_{i}"
+
+        run_folder.mkdir(parents=True, exist_ok=True)
+        return run_folder
 
 
     def run(self, duration=None, suffix="", flag_acq = "", run_id = None, number = None): 
@@ -124,18 +132,7 @@ class DataProcess:
         poller = zmq.Poller()
         poller.register(self.server, zmq.POLLIN)  # Controlla se ci sono dati disponibili
         
-        base_folder = Path("/swgo") / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
-        
-        if run_id is not None:
-            run_folder = base_folder / f"run_{run_id}"
-        else:
-            i = 1
-            run_folder = base_folder / f"acq_{i}"
-            while run_folder.exists():
-                i += 1
-                run_folder = base_folder / f"acq_{i}"
-
-        run_folder.mkdir(parents=True, exist_ok=True)
+        run_folder = self.get_folder_path(flag_acq=flag_acq, run_id=run_id, number=number)
 
         filename = self.check_file_exists(DataProcess.get_file_name(suffix))
         filepath = run_folder / filename

@@ -1,20 +1,9 @@
-from rc_exp import RC
+from rc_client import RC
 import subprocess
 import argparse
 import time
 import sys
-from hvmodbus import HVModbus
-
-def pars():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--firmware",  type= str, help="firmware version", default="HKL031V4B.hex")
-    parser.add_argument("--baud",  type= str, help="baudrate", default="115200")
-    parser.add_argument("--port",  type= str, help="port of the FEB", default="/dev/ttyPS1")
-    parser.add_argument("--channels",  type= str, help="comma-separated list of channels connected to the FEB", default="all")
-
-
-
-    return  parser.parse_args()
+from hv_client import HV
 
 
 #Dizionario che serve conversione tra l'indice del canale in decimale e il suo indice codificato one-hot per il Run Control
@@ -31,7 +20,7 @@ addr_channels_encoding = {
 
 }
 
-hv = HVModbus()
+hv = HV()
 rc = RC()
 
 
@@ -41,7 +30,7 @@ def reset():
     """
     try:
         phase_1 = rc.write(0, 0)
-        if phase_1 == 0:
+        if phase_1:
             rc.write(1, 0)
             return True
         else:
@@ -57,9 +46,9 @@ def init(value):
     Write the same value to register 0 and 1 to open a specific channel in boot mode
     """
     try:
-        reg_0 = rc.write(0, value)
-        if reg_0 == 0:
-            rc.write(17, value)
+        reg_0 = rc.write(17, value) 
+        if reg_0:
+            rc.write(0, value)
             rc.write(1, value)
             return 0
         else:
@@ -68,6 +57,24 @@ def init(value):
         
     except Exception as e:
         print(f"Something went wrong during the initialisation of the channel: {e}")
+        return -1
+
+def init_acq(value):
+    """
+    Function to set the Run Control and so the system to be ready for the acquisition
+    """
+    rc.write(17, 0)
+    try:
+        reg_0 = rc.write(1, value)
+        if reg_0:
+            rc.write(0, value)
+            return 0
+        else:
+            print("Something went wrong during the setting of the channel")
+            return -1
+        
+    except Exception as e:
+        print(f"Something went wrong during the setting of the channel: {e}")
         return -1
 
  
@@ -122,7 +129,6 @@ def change_addr(port, index):
     """
     Set a new address for the FEB
     """
-    args = pars()
     try:
         reset()
         time.sleep(0.5)
@@ -137,8 +143,6 @@ def change_addr(port, index):
                 try:
                     select(port, check)
                     hv.setModbusAddress(index + 1)
-                    print(args.firmware.split(".")[0][-2:])
-                    hv.setFirmwareVersion(args.firmware.split(".")[0][-2:])
                     print(f"FEB setted to address {index+1}")
                     time.sleep(0.5)
                     try:
@@ -147,6 +151,8 @@ def change_addr(port, index):
                     except Exception as e:
                         print(f"It was not possible to check for the change of the address: {e}")
                         return False
+                    
+                    return True
                 except Exception as e:
                     print(f"Something went wrong changing the FEB address: {e}")
                     return False
@@ -163,22 +169,40 @@ def change_addr(port, index):
         return False
 
 
+def get_channels(channels):
+        """Function to get which channels """
 
-def main():
+        if channels == "all":
+            channel_list = range(1, 8)
+            return channel_list
+        else:
+            if isinstance(channels, list):
+                channel_list = channels
+                return channel_list
+            else:
+                try:
+                    channel_list = [int(x) for x in channels.split(",")]
+                    return channel_list
+                except ValueError:
+                    return []
 
-    args = pars()
 
+def main(channels, port, baud, firmware):
 
-    if args.channels == "all":
+    rc_value = 0
+
+    if channels == "all":
         for i in range(0, 7):
             rst = reset()
+            time.sleep(0.1)
             if rst:
                 check = init(addr_channels_encoding[i])
+                time.sleep(0.1)
                 if check == 0:
                     print(f"Channel:{i}")
-                    boot(args.baud, args.firmware, args.port)
+                    boot(baud, firmware, port)
                     time.sleep(1)
-                    check_change = change_addr(args.port, i)
+                    check_change = change_addr(port, i)
                     if check_change:
                         continue
                 else:
@@ -186,26 +210,35 @@ def main():
             else:
                 print("Something went wrong during the reset in the main function")
 
-        reset()
+        for i in range(0, 7):
+            rc_value += addr_channels_encoding[i]
+        
+        init_acq(rc_value)
+
+        
     else:
         try:
-            channel_list = [int(x) for x in args.channels.split(",")]
+            channel_list = get_channels(channels)
             for j in channel_list:
                 rst = reset()
                 if rst:
                     check = init(addr_channels_encoding[j])
                     if check == 0:
                         print(f"Channel:{j}")
-                        boot(args.baud, args.firmware, args.port)
+                        boot(baud, firmware, port)
                         time.sleep(1)
-                        check_change_2 = change_addr(args.port, j)
+                        check_change_2 = change_addr(port, j)
                         if check_change_2:
                             continue
                     else:
                         print("Something went wrong during the initialisation of the channel")
                 else:
                     print("Something went wrong during the reset in the main")
-            reset()
+            
+            for i in channel_list:
+                rc_value += addr_channels_encoding[i]
+        
+            init_acq(rc_value)
 
         except ValueError:
             print('E: failed to parse --channels - should be comma-separated list of integers')
@@ -213,5 +246,3 @@ def main():
 
 
 
-if __name__== "__main__":
-    main()

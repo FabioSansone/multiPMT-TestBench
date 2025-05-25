@@ -166,6 +166,9 @@ class HV():
         monData['alarm'] = regs[0x002E]
         return monData
     
+    def setModbusAddress(self, addr):
+        self.dev.write_register(0x0000, addr)
+    
 
     def check_address(self, port, channel):
         if self.open(port, channel):
@@ -439,6 +442,8 @@ class HV():
 
         return valid_channels, not_valid_channels
     
+    
+    
 
     def set_hv_init_configuration(self, port, channels, voltage_set, threshold_set, limit_trip_time, limit_voltage, limit_current, limit_temperature, rate_up, rate_down):
 
@@ -574,6 +579,8 @@ class HV():
                 self.calibration()
             else:
                 continue
+        
+        return True
 
 
     def power_off(self, channels, port):
@@ -677,6 +684,35 @@ class HV():
                 
 
         return hv_value
+    
+
+    def get_serial(self, channels, port):
+        """Function to get the serial numbers associated with the FEBs"""
+        info = {}
+        hv_list = self.get_channels(channels)
+        logger_hv.info(f"Canali ottenuti: {list(hv_list)}")
+        for hv in hv_list:
+            if self.open(port, hv):
+                try:
+                    device_id = self.dev.read_registers(0x004, 2)
+                    pmt_serial = self.dev.read_string(0x0008, 6)
+                    feb_serial = self.dev.read_string(0x0014, 6)
+                    hv_serial = self.dev.read_string(0x000E, 6)
+                    info[hv] = [device_id, pmt_serial, feb_serial, hv_serial]
+                    logger_hv.info(f"Channel {hv}: Device ID {device_id}, PMT Serial {pmt_serial}, FEB_serial {feb_serial}, HV Serial {hv_serial}")
+                except Exception as e:
+                    logger_hv.error(f"Error reading serial for channel {hv}: {e}")
+                time.sleep(1)
+            else:
+                logger_hv.warning(f"Channel {hv} non aperto correttamente.")
+        return info
+
+
+
+
+            
+        
+
     
 
 

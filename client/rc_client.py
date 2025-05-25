@@ -152,7 +152,10 @@ class RC:
         """Function to monitor the values of a general number of registers."""
 
         try:
-            rc_list = [int(x) for x in regs.split(",")]
+            if isinstance(regs, list):
+                rc_list = regs
+            else:
+                rc_list = [int(x) for x in regs.split(",")]
         except ValueError:
             print('E: failed to parse --reg - should be a comma-separated list of integers')
             return None
