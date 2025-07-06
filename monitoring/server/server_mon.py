@@ -45,6 +45,7 @@ class Server:
         timestamp = Server.generate_timestamp()
         file_map = {
             "rc_data": "rcmon",
+            "hv_data": "hvmon",
             "mon_data": "mon"
         }
 
@@ -74,6 +75,12 @@ class Server:
                     if reg_address not in excluded_key:
                         writer.writerow([reg_address, reg_info["time"], reg_info["value"]])
             
+        if data_type == "hv_data":
+            with self.open_files(client_id, data_type, batch_num) as file_hv:
+                writer = csv.writer(file_hv)
+                for channel, channel_info in data.items():
+                    if channel not in excluded_key:
+                        writer.writerow([channel, channel_info["time"], channel_info["V"], channel_info["I"], channel_info["T"]])
 
         if data_type == "mon_data":
             with self.open_files(client_id, data_type, batch_num) as file_mon:
@@ -87,14 +94,22 @@ class Server:
     def open_files(self, client_id, data_type, batch_num):
         key = f"{client_id.decode()}_{data_type}"
         if key not in self.opened_files:
-            filename = self.check_file_exists(Server.get_file_name(data_type))
-            filepath = Path(f"/swgo/Test/SWGO_Testbench/multiPMT/calibration/batch_{batch_num}") / "monitoring" /  filename
+            if Path("/swgo").exists():
+                base_path = Path("/swgo/Test/SWGO_Testbench/multiPMT")
+            else:
+                base_path = Path.home() / "Test"
+                base_path.mkdir(parents=True, exist_ok=True)  # Crea Test se non esiste
+
+            filepath = base_path / "calibration" / f"batch_{batch_num}" / "monitoring" / self.check_file_exists(Server.get_file_name(data_type))
             filepath.parent.mkdir(parents=True, exist_ok=True)
             file = open(filepath, 'a', newline='')
             writer = csv.writer(file)
 
             if data_type == "rc_data":
                 writer.writerow(['register', 'time', 'int_value'])
+
+            if data_type == "hv_data":
+                writer.writerow(['address', 'time', 'V', 'I', 'T'])
 
             if data_type == "mon_data":
                 writer.writerow(['time', 'temp', 'pressure', 'hum', '5V', '3V3', 'I'])

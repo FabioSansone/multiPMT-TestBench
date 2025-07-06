@@ -6,18 +6,26 @@ import datetime
 import argparse
 import sys
 import mmap
+from types import SimpleNamespace
 
 from bme280 import BME280
 from tla2024 import TLA2024
+from hv_client_old import HV
 
 IIC_BUS = 1
 CHIP_ADDRESS_BME = 0x76
 CHIP_ADDRESS_TLA = 0x49
 REGS = [x for x in range(20, 27)]
 MAX_REG_ADDR = 50
+CHANNELS = [x for x in range(1, 8)]
+params = SimpleNamespace(mode = 'tcp',
+                         host = 'localhost',
+                         port = 502)
+
 
 bme = BME280(IIC_BUS, CHIP_ADDRESS_BME)
 tla = TLA2024(IIC_BUS, CHIP_ADDRESS_TLA)
+hv = HV()
 
 
 #########################################
@@ -31,6 +39,12 @@ mon_error_handler.setLevel(logging.WARNING)
 mon_error_handler.setFormatter(formatter)
 
 logger.addHandler(mon_error_handler)
+
+
+pymodbus_logger = logging.getLogger("pymodbus")
+pymodbus_logger.setLevel(logging.WARNING)
+pymodbus_logger.addHandler(mon_error_handler)
+pymodbus_logger.propagate = False
 #########################################
 
 
@@ -39,9 +53,10 @@ PING_INTERVAL = 6
 
 class Client:
 
-    def __init__(self, port, server_ip, client_id):
+    def __init__(self, port, server_ip, client_id, hv_port = '/dev/ttyPS1'):
          
         self.port = port
+        self.hv_port = hv_port
         self.context = zmq.Context()
         self.client = None
         self.ip = server_ip
@@ -166,6 +181,7 @@ class Client:
             
             self.read_mon_data()
             self.read_rates()
+            self.read_feb()
 
             delta = freq - (time.time() - start_freq)
             time.sleep(max(delta, 0.01))
@@ -234,12 +250,14 @@ class Client:
                 "3V3": (data_tla[2]/1000) * 2,
                 "I": data_tla[1]
             }
+
+            self.send_json(data)
         
         except Exception as e:
             logger.critical(f"Unexpected problems when reading monitoring data: {e}")
 
         
-        self.send_json(data)
+        
 
 
     def auto_int(self, x):
@@ -280,11 +298,31 @@ class Client:
                     
                 }
             data = reg_value
+            self.send_json(data)
 
         except Exception as e:
             logger.critical(f"Unexpected problems when reading rates data: {e}")
 
-        self.send_json(data)
+        
+    
+
+    def check_feb(self):
+        valid, not_valid = hv.process_channels(CHANNELS, self.hv_port)
+        logger.info(f"This is the list of valid channels: {valid}")
+        logger.info(f"This is the list of not valid channels: {not_valid}")
+        return valid
+    
+    def read_feb(self):
+        if self.client is None:
+            return None
+        try:
+            data = hv.read_volt(CHANNELS, self.hv_port)
+            self.send_json(data) 
+        except Exception as e:
+            logger.critical(f"Unexpected problems when reading hv data: {e}")
+
+        
+
         
         
 
@@ -300,10 +338,12 @@ if __name__ == "__main__":
     parser.add_argument("--port", action="store", type=int, help="The port of the connection with the server (default:9000)", default=9000)
     parser.add_argument("--server_ip", action="store", type=str, help="The ip of the server (default:172.16.24.102)", default="172.16.24.102")
     parser.add_argument("--client_id", action="store", type=str, help="The id of the client (default:mon_249)", default="mon_249")
+    parser.add_argument("--hv_port", action="store", type=str, help="The serial port of the modbus FEB (default:/dev/ttyPS1)", default="/dev/ttyPS1")
+
 
     args = parser.parse_args()
 
-    client = Client(port=args.port, server_ip=args.server_ip, client_id=args.client_id)
+    client = Client(port=args.port, server_ip=args.server_ip, client_id=args.client_id, hv_port=args.hv_port)
 
     while True:
         client.start_connection()

@@ -20,9 +20,9 @@ logger.addHandler(processor_error_handler)
 #########################################
 
 # In milliseconds
-HEARTBEAT_IVL = 60000
-HEARTBEAT_TIMEOUT = 120000
-HEARTBEAT_TTL = 300000
+#HEARTBEAT_IVL = 60000
+#HEARTBEAT_TIMEOUT = 120000
+#HEARTBEAT_TTL = 300000
 
 #Dictionary to set the folder based on the acquisition type => "acquisition_type" : "folder_name"
 
@@ -76,9 +76,9 @@ class DataProcess:
     def start_connection(self):
         try:
             self.server = self.context.socket(zmq.ROUTER)
-            self.server.setsockopt(zmq.HEARTBEAT_IVL, HEARTBEAT_IVL)
-            self.server.setsockopt(zmq.HEARTBEAT_TIMEOUT, HEARTBEAT_TIMEOUT)
-            self.server.setsockopt(zmq.HEARTBEAT_TTL, HEARTBEAT_TTL)
+ #           self.server.setsockopt(zmq.HEARTBEAT_IVL, HEARTBEAT_IVL)
+ #           self.server.setsockopt(zmq.HEARTBEAT_TIMEOUT, HEARTBEAT_TIMEOUT)
+ #           self.server.setsockopt(zmq.HEARTBEAT_TTL, HEARTBEAT_TTL)
             self.server.setsockopt(zmq.RCVTIMEO, 60000)
             self.server.bind(f"tcp://*:{self.port}")
             logger.info(f"Server started on port {self.port}")
@@ -109,7 +109,11 @@ class DataProcess:
     
     def get_folder_path(self, flag_acq = "", run_id = None, number = None):
 
-        base_folder = Path("/swgo") / "Test"/ "SWGO_Testbench" / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
+
+        base_path = Path("/swgo") if Path("/swgo").exists() else Path.home() / "Test"
+
+        base_folder = base_path / "SWGO_Testbench" / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
+
         if run_id is not None:
             run_folder = base_folder / f"run_{run_id}"
         else:
