@@ -11,6 +11,7 @@ import HardwareResources
 from InstrumentManager import InstrumentsManager
 from data_processing import DataProcess
 import MonitoringProcessing
+import socket
 
 
 
@@ -19,6 +20,7 @@ import MonitoringProcessing
 MAX_RETRIES = 3
 DELAY_WIN = 0
 WIDTH_WIN = 130
+DISCOVERY_PORT = 8001
 
 #ZMQ Constants
 POLLER_TIMEOUT_CONNECTION = 20000 #in ms
@@ -58,13 +60,44 @@ class Server(cmd2.Cmd):
         self.batch = None
         self.flag_test = None
 
+        self.discovery_stop_event = threading.Event()
+        self.discovery_thread = threading.Thread(
+            target=self._udp_discovery_listener,
+            args=(self.discovery_stop_event,),
+            daemon=True
+        )
+        self.discovery_thread.start()
+
 
     
     ##########################################
     # SERVER-CLIENT COMMUNICATION
     ##########################################
 
-    def _start_connection(self, port = 8001):
+    def _udp_discovery_listener(self, stop_event):
+        """
+        Thread to handle UDP discovery calls.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.bind(('', DISCOVERY_PORT))
+
+            self.poutput(f"[UDP] Discovery listener started on port {DISCOVERY_PORT}")
+
+            while not stop_event.is_set():
+                try:
+                    s.settimeout(1.0)  # breve timeout per poter controllare stop_event
+                    data, addr = s.recvfrom(1024)
+                    if data == b"DISCOVER_SERVER":
+                        self.poutput(f"[UDP] Ricevuto DISCOVER_SERVER da {addr[0]}")
+                        s.sendto(b"I am server", addr)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    self.poutput(f"[UDP] Errore durante la gestione del discovery: {e}")
+
+    def _start_connection(self, port = DISCOVERY_PORT):
         """Starts the connection with """
         try:
             self.server = context.socket(zmq.ROUTER)
@@ -194,6 +227,9 @@ class Server(cmd2.Cmd):
         self.clients_connected.clear()
         if self.server:
             self.server.close()
+        self.discovery_stop_event.set()
+        if self.discovery_thread.is_alive():
+            self.discovery_thread.join()
         context.term()
 
     ##########################################
@@ -1056,7 +1092,7 @@ class Server(cmd2.Cmd):
     client_parser.add_argument("num_clients", type=str, help="The number of clients expected to connect")
     client_parser.add_argument("batch", type=int, help="Selects the BATCH of PMTs under test")
     client_parser.add_argument("--flag_test", type=int, help="Use 0 if the HV Boards are connected otherwise select 1", default=0)
-    client_parser.add_argument("--port", type=int, help="Selects the port to establish the connection", default=8001)
+    client_parser.add_argument("--port", type=int, help="Selects the port to establish the connection", default=DISCOVERY_PORT)
 
     @cmd2.with_argparser(client_parser)
     @cmd2.with_category("Clients Selection")

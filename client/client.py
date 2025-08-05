@@ -5,11 +5,15 @@ import logging
 import time
 import json
 import subprocess
-import multiprocessing as mp
 from rc_client import RC
 from hv_client import HV
 from mon_conf import MON
 import prog_FEB
+import argparse
+
+import socket
+import struct
+import fcntl
 
 #########################################
 logger = logging.getLogger("Client")
@@ -21,6 +25,40 @@ client_error_handler.setFormatter(formatter)
 logger.addHandler(client_error_handler)
 #########################################
 
+
+#########################################
+###BROADCAST UDP###
+#########################################
+
+def get_broadcast_address(interface='eth0'):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ip = socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(), 0x8919, struct.pack('256s', interface[:15].encode()))[20:24])
+    netmask = socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(), 0x891b, struct.pack('256s', interface[:15].encode()))[20:24])
+    
+    ip_parts = list(map(int, ip.split('.')))
+    mask_parts = list(map(int, netmask.split('.')))
+    broadcast_parts = [ip_parts[i] | (~mask_parts[i] & 0xFF) for i in range(4)]
+    return ".".join(map(str, broadcast_parts))
+
+
+def discover_server_ip(broadcast_ip, port, timeout=3):
+    MESSAGE = b"DISCOVER_SERVER"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(timeout)
+        s.sendto(MESSAGE, (broadcast_ip, port))
+        try:
+            data, addr = s.recvfrom(1024)
+            if data == b"I am server":
+                return addr[0]
+        except socket.timeout:
+            return None
+
+
+##############################################
+
 PING_INTERVAL = 6 # s
 POLLER_COMMANDS_TIMEOUT = 100 # ms
 
@@ -30,11 +68,11 @@ hv = HV()
 mon = MON()
 
 class Client:
-    def __init__(self, port=8001, hv_port="/dev/ttyPS1"):
+    def __init__(self, server_ip, port=8001, hv_port="/dev/ttyPS1"):
         self.port = port
         self.hv_port = hv_port
         self.client = None
-        self.server_ip = "172.16.24.107"
+        self.server_ip = server_ip
         self.client_id = b"Client"
 
     def send_json(self, data):
@@ -95,7 +133,7 @@ class Client:
                         time.sleep(0.1)
                         rc.write(16, 0)
                         time.sleep(0.1)
-                        exec_command = ["/root/evproducer.sh"]
+                        exec_command = ["/root/client/evproducer.sh", self.server_ip]
                         logger.info(f"Executing evproducer with: {exec_command}")
                         process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         logger.info("Evproducer has started successfully")
@@ -297,7 +335,30 @@ class Client:
             logger.info("Client connection closed.")
 
 if __name__ == "__main__":
-    client = Client()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server_ip", action="store", type=str, help="The ip of the server")
+    parser.add_argument("--port", action="store", type=int, help="The port of the connection with the server (default:8001)", default=8001)
+    parser.add_argument("--hv_port", action="store", type=str, help="The serial port of the modbus FEB (default:/dev/ttyPS1)", default="/dev/ttyPS1")
+    parser.add_argument("--interface", action="store", type=str, help="The network interface of the client (default=eth0)", default="eth0")
+
+    args = parser.parse_args()
+
+    server_ip = args.server_ip
+    if not server_ip:
+        # Se non è fornito IP, provo a scoprirlo dinamicamente
+        broadcast_ip = get_broadcast_address(interface=args.interface)
+        logger.info(f"Trying to discover server IP using broadcast on {broadcast_ip}")
+        server_ip = discover_server_ip(broadcast_ip=broadcast_ip, port=args.port)
+        if server_ip is None:
+            logger.critical("Server discovery failed. Exiting.")
+            exit(1)
+        else:
+            logger.info(f"Discovered server IP: {server_ip}")
+
+
+    client = Client(server_ip=args.server_ip, port=args.port, hv_port=args.hv_port)
+
     try:
         while True:
             client.start_connection()

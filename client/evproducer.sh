@@ -1,3 +1,5 @@
 #!/bin/bash
-evproducer_pid=$(nohup /opt/mpmt-readout/evproducer --host 172.16.24.107 --disable-rc > /dev/null 2>&1 & echo $!)
+SERVER_IP=$1
+evproducer_pid=$(nohup /opt/mpmt-readout/evproducer --host $SERVER_IP --disable-rc > /dev/null 2>&1 & echo $!)
+echo "Started evproducer with PID $evproducer_pid and server IP $SERVER_IP"
 exit
