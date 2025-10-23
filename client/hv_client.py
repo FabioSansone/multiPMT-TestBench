@@ -803,13 +803,23 @@ class HV:
             else:
                 hv_logger.warning(f"Channel {hv} non aperto correttamente.")
         return info
+    
+    def getStandardFebAddr(self):
+        for addr in range(1, 21):
+            if self.open(addr):
+                hv_logger.info(f"FEB found at address {addr}")
+                return addr
+        hv_logger.error("No FEB found in the address range 0-20")
+        return None
 
     
-    
+    def checkAddrChange(self, new_addr):
+        if self.checkAddress(new_addr):
+            hv_logger.info("The address has been changed correctly")
+        else:
+            hv_logger.info("Something went wrong during the change of the address")
     
         
-
-
 
 
     def close(self):

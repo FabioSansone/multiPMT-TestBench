@@ -161,6 +161,7 @@ def change_addr(port, index):
                 return True  
 
         except Exception as e:
+            
             print(f"It was not possible to open the FEB with the standard address in the change function: {e}")
             return False
 

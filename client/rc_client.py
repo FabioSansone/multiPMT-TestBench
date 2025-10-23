@@ -1,7 +1,9 @@
 import sys
 import mmap
 import datetime
-import time
+import logging
+
+rc_logger = logging.getLogger("Client")
 
 class RC:
 
@@ -13,14 +15,14 @@ class RC:
         try:
             self.fid = open('/dev/uio0', 'r+b', 0)
         except:
-            print("E: UIO device /dev/uio0 not found")
+            rc_logger.error("E: UIO device /dev/uio0 not found")
             sys.exit(-1)
         
 
         try:
             self.regs = mmap.mmap(self.fid.fileno(), 0x10000)
         except Exception as e:
-            print(f"E: Failed to map memory: {e}")
+            rc_logger.error(f"E: Failed to map memory: {e}")
             self.fid.close()
             sys.exit(-1)
 
@@ -54,11 +56,11 @@ class RC:
                 self.regs[addr*4:(addr*4)+4] = int.to_bytes(value, 4, byteorder='little')
                 return True
             except:
-                print(f'E: write register error')
+                rc_logger.error(f'E: write register error')
                 return False
 
         else:
-            print(f'E: register address outside boundary - min:0 max:{self.maxRegisterAddress}')
+            rc_logger.error(f'E: register address outside boundary - min:0 max:{self.maxRegisterAddress}')
             return False
         
     def reset(self):
@@ -71,28 +73,65 @@ class RC:
                 self.write(1, 0)
                 return True
             else:
-                print("Something went wrong during the reset of the register 0")
+                rc_logger.error("Something went wrong during the reset of the register 0")
                 return False
         except Exception as e:
-            print(f"Something went wrong during the reset of the register 0 and 1: {e}")
+            rc_logger.error(f"Something went wrong during the reset of the register 0 and 1: {e}")
             return False
         
     
-    def init_boot(self, value):
+    def init_boot(self, channels):
         """
         Write the same value to register 0 and 1 to open a specific channel in boot mode. One channel
         """
         try:
-            reg_0 = self.write(0, value)
-            if reg_0 == 0:
-                self.write(1, value)
-                return True
+            if channels == "all":
+                reg_0 = self.write(17, 127)
+                if reg_0 == 0:
+                    self.write(0, 127)
+                    self.write(1, 127)
+                    return True
+                else:
+                    rc_logger.error("Something went wrong during the initialisation of the register 0")
+                    return False
             else:
-                print("Something went wrong during the initialisation of the register 0")
-                return False
+
+                value = 0
+                valid_channels = []
+
+                if isinstance(channels, list):
+                    channel_list = channels
+                elif isinstance(channels, str):
+                    channel_list = [int(x) for x in channels.split(",")]
+                
+                for channel in channel_list:
+                    if self.checkChannelsBoundary(channel):
+                        value += 2**(channel-1)
+                    else:
+                        rc_logger.warning(f"Channel {channel} is out of range. Ignored")
+                        pass
+                
+                s = set(valid_channels)
+                not_valid_channels = [x for x in channel_list if x not in s]
+                
+                if not valid_channels:
+                    rc_logger.error("No valid channels provided. Aborting operation")
+                    return (False, not_valid_channels)
+
+                if self.write(1, value):
+                    self.write(0, value)
+                    rc_logger.info(f"The channels {channels} have been opened in boot mode")
+                    return (True, valid_channels)
+                
+                else:
+                    rc_logger.error("Somethig went wrong opening the channels in boot mode")
+                    self.reset()
+                    return (False, not_valid_channels)
+
+
             
         except Exception as e:
-            print(f"Something went wrong during the initialisation in boot mode of the channel: {e}")
+            rc_logger.error(f"Something went wrong during the initialisation in boot mode of the channel: {e}")
             return False
         
     
@@ -100,6 +139,7 @@ class RC:
         """
         Write the same value to register 0 and 1 to open a specific channel in data mode
         """
+        self.write(17, 0)
         try:
             if channels == "all":
                 if self.write(1, 127):
@@ -114,7 +154,11 @@ class RC:
             else:
                 value = 0
                 valid_channels = []
-                channel_list = [int(x) for x in channels.split(",")]
+
+                if isinstance(channels, list):
+                    channel_list = channels
+                elif isinstance(channels, str):
+                    channel_list = [int(x) for x in channels.split(",")]
 
                 for channel in channel_list:
                     if self.checkChannelsBoundary(channel):
@@ -122,28 +166,28 @@ class RC:
                         value += 2**(channel - 1)
 
                     else:
-                        print(f"Channel {channel} is out of range. Ignored")
+                        rc_logger.warning(f"Channel {channel} is out of range. Ignored")
                         pass
                 
                 s = set(valid_channels)
                 not_valid_channels = [x for x in channel_list if x not in s]
                 
                 if not valid_channels:
-                    print("No valid channels provided. Aborting operation")
+                    rc_logger.error("No valid channels provided. Aborting operation")
                     return (False, not_valid_channels)
 
                 if self.write(1, value):
                     self.write(0, value)
-                    print(f"The channels {channels} have been opened in data mode")
+                    rc_logger.info(f"The channels {channels} have been opened in data mode")
                     return (True, valid_channels)
                 
                 else:
-                    print("Somethig went wrong opening the channels in data mode")
+                    rc_logger.error("Somethig went wrong opening the channels in data mode")
                     self.reset()
                     return (False, not_valid_channels)
                 
         except Exception as e:
-            print(f"During the initialisation of the Run Control something went wrong : {e}")
+            rc_logger.error(f"During the initialisation of the Run Control something went wrong : {e}")
             return (False, None)
         
 
@@ -157,7 +201,7 @@ class RC:
             else:
                 rc_list = [int(x) for x in regs.split(",")]
         except ValueError:
-            print('E: failed to parse --reg - should be a comma-separated list of integers')
+            rc_logger.error_('E: failed to parse --reg - should be a comma-separated list of integers')
             return None
 
         reg_value = {}
