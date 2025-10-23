@@ -295,7 +295,7 @@ class Client:
                             port = server_command.get("port")
                             baud = server_command.get("baud")
                             firmware = server_command.get("firmware")
-                            set_start_up = {"response": "hv_start_up", "result": prog_FEB.main(channels=channel, port=port, baud=baud, firmware=firmware)}
+                            set_start_up = {"response": "hv_start_up", "result": progFEB.main(channels=channel, port=port, baud=baud, firmware=firmware)}
                             self.send_json(set_start_up)
                     
 

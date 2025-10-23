@@ -106,6 +106,7 @@ class RC:
                 
                 for channel in channel_list:
                     if self.checkChannelsBoundary(channel):
+                        valid_channels.append(channel)
                         value += 2**(channel-1)
                     else:
                         rc_logger.warning(f"Channel {channel} is out of range. Ignored")
