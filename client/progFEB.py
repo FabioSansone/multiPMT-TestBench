@@ -112,7 +112,7 @@ def main(channels, baud, firmware, port, rc, hv):
         
         time.sleep(0.1)
         
-        success, valid_channels = rc.init_boot([channel-1])
+        success, valid_channels = rc.init_boot([channel])
         if not success:
             print(f"Failed to initialize channel {channel-1} in boot mode")
             continue
