@@ -2,7 +2,6 @@ import subprocess
 import sys
 import time
 import logging
-import numpy as np
 from types import SimpleNamespace
 
 from rc_client import RC
@@ -46,45 +45,67 @@ def changeAddress(index, rc, hv):
     """
     Set a new address for the FEB
     """
-
     try:
-        rc.reset()
+        
+        if not rc.reset():
+            print("Failed to reset Run Control")
+            return False
         time.sleep(0.1)
-        rc.write(1, addr_channels_encoding[index])
+        
+        if not rc.write(1, addr_channels_encoding[index]):
+            print(f"Failed to enable channel {index} via RC")
+            return False
         time.sleep(0.1)
+        
+        
+        hv.reset_connection()
+        time.sleep(0.5)
+        
+        
+        feb_old_addr = hv.getStandardFebAddr()
+        if feb_old_addr is None:
+            print("No FEB found with standard address")
+            return False
+            
+        new_address = index + 1
+        
+        if feb_old_addr == new_address:
+            print(f"FEB already at correct address {new_address}")
+            return True
+            
+        print(f"Changing FEB address from {feb_old_addr} to {new_address}")
+        
+        
+        if not hv.checkAddress(feb_old_addr):
+            print(f"Cannot connect to FEB at address {feb_old_addr}")
+            return False
+        
+        
+        print("Sending address change command...")
         try:
-            feb_old_addr = hv.getStandardFebAddr()
-            if feb_old_addr is None:
-                print("It was not possible to change the address of the FEB")
-                return False
-            elif feb_old_addr != index + 1:
-                try:
-                    hv.checkAddress(feb_old_addr)
-                    hv.setModbusAddress(index+1)
-                    print(f"FEB setted to address {index+1}")
-                    time.sleep(0.5)
-                    try:
-                        hv.checkAddress(index+1)
-                        time.sleep(0.5)
-                    except Exception as e:
-                        print(f"It was not possible to check for the change of the address: {e}")
-                        return False
-                    
-                    return True
-                except Exception as e:
-                    print(f"Something went wrong changing the FEB address: {e}")
-                    return False
-            else:
-                print(f"The FEB is already at address {index + 1}. Skipping...")
-                return True
-
+            hv.setModbusAddress(new_address)
         except Exception as e:
-            print(f"It was not possible to open the FEB with the standard address in the change function: {e}")
+            print(f"Expected communication error during address change: {e}")
+        
+        
+        print("Waiting for FEB reboot...")
+        time.sleep(1)
+        
+        
+        hv.reset_connection()
+        time.sleep(0.5)
+        
+        
+        if hv.checkAddress(new_address):
+            print(f"FEB address successfully changed to {new_address}")
+            return True
+        else:
+            print(f"Failed to verify new address {new_address}")
             return False
 
     except Exception as e:
-        print(f"Something went wrong during the address change: {e}")
-        return False    
+        print(f"Unexpected error during address change: {e}")
+        return False 
 
 
 
@@ -135,8 +156,7 @@ def main(channels, baud, firmware, port, rc, hv):
         print(f"Channel {channel-1} programmed successfully")
     
     if successful_channels:
-        successful_channels = np.array(successful_channels)
-        print(f"Setting programmed channels to data mode: {successful_channels-1}")
+        print(f"Setting programmed channels to data mode: {successful_channels}")
         success, final_channels = rc.init_data(successful_channels)
         if success:
             print(f"Successfully programmed {len(successful_channels)} channels: {successful_channels}")

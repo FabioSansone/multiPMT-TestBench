@@ -35,7 +35,7 @@ class HV:
 
 
         if self.params.mode == 'tcp':
-            self.client = ModbusClient.ModbusTcpClient(self.params.host, port=502, framer=FramerType.SOCKET, timeout=1, retries=1) 
+            self.client = ModbusClient.ModbusTcpClient(self.params.host, port=502, framer=FramerType.SOCKET, timeout=2, retries=3) 
             if not self.client.connect():
                 raise ConnectionError(f"Host not reachable or mbusd not running ({self.params.host})")
 
@@ -48,8 +48,7 @@ class HV:
                 bytesize=8,
                 parity="N",
                 stopbits=1,
-                timeout=1,
-                retries=1
+                timeout=2
         )
 
             if not self.client.connect():
@@ -820,6 +819,26 @@ class HV:
         else:
             hv_logger.info("Something went wrong during the change of the address")
     
+
+    def ResetConnection(self):
+        """Resetta completamente la connessione Modbus"""
+        try:
+            if self.client:
+                self.client.close()
+            
+            if self.params.mode == 'tcp':
+                self.client = ModbusClient.ModbusTcpClient(
+                    self.params.host, port=502, framer=FramerType.SOCKET, timeout=2, retries=0)
+            elif self.params.mode == 'rtu':
+                self.client = ModbusClient.ModbusSerialClient(
+                    self.params.port, framer=FramerType.RTU, baudrate=115200,
+                    bytesize=8, parity="N", stopbits=1, timeout=2, retries=0)
+            
+            return self.client.connect()
+        except Exception as e:
+            hv_logger.error(f"Error resetting connection: {e}")
+            return False
+        
         
 
 
