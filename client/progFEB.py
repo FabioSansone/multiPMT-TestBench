@@ -28,16 +28,16 @@ def boot(baud, firmware, port):
     command = ["stm32flash", '-b', f'{baud}', '-w', f'{firmware}', '-e', '255', '-v', f'{port}']
     
     try:
-        feb_logger.info(f"Flashing FEB with firmware {firmware} on port {port}")
+        print(f"Flashing FEB with firmware {firmware} on port {port}")
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         time.sleep(0.5)
-        feb_logger.info("FEB flashed successfully")
+        print("FEB flashed successfully")
         return True
     except subprocess.CalledProcessError as e:
-        feb_logger.error(f"Flashing failed: {e.stderr}")
+        print(f"Flashing failed: {e.stderr}")
         return False
     except Exception as e:
-        feb_logger.error(f"Unexpected error during flashing: {e}")
+        print(f"Unexpected error during flashing: {e}")
         return False
 
 
@@ -54,35 +54,35 @@ def changeAddress(index, rc, hv):
         try:
             feb_old_addr = hv.getStandardFebAddr()
             if feb_old_addr is None:
-                feb_logger.error("It was not possible to change the address of the FEB")
+                print("It was not possible to change the address of the FEB")
                 return False
             elif feb_old_addr != index + 1:
                 try:
                     hv.checkAddress(feb_old_addr)
                     hv.setModbusAddress(index+1)
-                    feb_logger.info(f"FEB setted to address {index+1}")
+                    print(f"FEB setted to address {index+1}")
                     time.sleep(0.5)
                     try:
                         hv.checkAddress(index+1)
                         time.sleep(0.5)
                     except Exception as e:
-                        feb_logger.error(f"It was not possible to check for the change of the address: {e}")
+                        print(f"It was not possible to check for the change of the address: {e}")
                         return False
                     
                     return True
                 except Exception as e:
-                    feb_logger.error(f"Something went wrong changing the FEB address: {e}")
+                    print(f"Something went wrong changing the FEB address: {e}")
                     return False
             else:
-                feb_logger.info(f"The FEB is already at address {index + 1}. Skipping...")
+                print(f"The FEB is already at address {index + 1}. Skipping...")
                 return True
 
         except Exception as e:
-            feb_logger.error(f"It was not possible to open the FEB with the standard address in the change function: {e}")
+            print(f"It was not possible to open the FEB with the standard address in the change function: {e}")
             return False
 
     except Exception as e:
-        feb_logger.error(f"Something went wrong during the address change: {e}")
+        print(f"Something went wrong during the address change: {e}")
         return False    
 
 
@@ -91,59 +91,59 @@ def main(channels, baud, firmware, port, rc, hv):
     """
     Main function to program FEBs
     """
-    feb_logger.info(f"Starting FEB programming: channels={channels}, baud={baud}, firmware={firmware}, port={port}")
+    print(f"Starting FEB programming: channels={channels}, baud={baud}, firmware={firmware}, port={port}")
     
     channels_list = hv.getChannels(channels)
     if not channels_list:
-        feb_logger.error("No valid channels specified")
+        print("No valid channels specified")
         return False
     
-    feb_logger.info(f"Processing channels: {channels_list}")
+    print(f"Processing channels: {channels_list}")
     
     successful_channels = []
     
     for channel in channels_list:
-        feb_logger.info(f"Programming channel {channel-1}")
+        print(f"Programming channel {channel-1}")
         
         
         if not rc.reset():
-            feb_logger.error(f"Failed to reset RC for channel {channel-1}")
+            print(f"Failed to reset RC for channel {channel-1}")
             continue
         
         time.sleep(0.1)
         
         success, valid_channels = rc.init_boot([channel-1])
         if not success:
-            feb_logger.error(f"Failed to initialize channel {channel-1} in boot mode")
+            print(f"Failed to initialize channel {channel-1} in boot mode")
             continue
         
         time.sleep(0.1)
         
         if not boot(baud, firmware, port):
-            feb_logger.error(f"Flashing failed for channel {channel-1}")
+            print(f"Flashing failed for channel {channel-1}")
             continue
         
         time.sleep(1)
         
         channel_index = channel - 1
         if not changeAddress(channel_index, rc, hv):
-            feb_logger.error(f"Address change failed for channel {channel}")
+            print(f"Address change failed for channel {channel}")
             continue
         
         successful_channels.append(channel-1)
-        feb_logger.info(f"Channel {channel-1} programmed successfully")
+        print(f"Channel {channel-1} programmed successfully")
     
     if successful_channels:
-        feb_logger.info(f"Setting programmed channels to data mode: {successful_channels}")
+        print(f"Setting programmed channels to data mode: {successful_channels}")
         success, final_channels = rc.init_data(successful_channels)
         if success:
-            feb_logger.info(f"Successfully programmed {len(successful_channels)} channels: {successful_channels}")
+            print(f"Successfully programmed {len(successful_channels)} channels: {successful_channels}")
             return True
         else:
-            feb_logger.error("Failed to set channels to data mode")
+            print("Failed to set channels to data mode")
             return False
     else:
-        feb_logger.error("No channels were successfully programmed")
+        print("No channels were successfully programmed")
         return False
 
 
