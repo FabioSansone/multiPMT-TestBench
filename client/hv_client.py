@@ -35,7 +35,7 @@ class HV:
 
 
         if self.params.mode == 'tcp':
-            self.client = ModbusClient.ModbusTcpClient(self.params.host, port=502, framer=FramerType.SOCKET) 
+            self.client = ModbusClient.ModbusTcpClient(self.params.host, port=502, framer=FramerType.SOCKET, timeout=5, retries=5) 
             if not self.client.connect():
                 raise ConnectionError(f"Host not reachable or mbusd not running ({self.params.host})")
 
@@ -48,7 +48,8 @@ class HV:
                 bytesize=8,
                 parity="N",
                 stopbits=1,
-                timeout=1
+                timeout=5,
+                retries=5
         )
 
             if not self.client.connect():

@@ -2,6 +2,7 @@ import subprocess
 import sys
 import time
 import logging
+import numpy as np
 from types import SimpleNamespace
 
 from rc_client import RC
@@ -29,7 +30,7 @@ def boot(baud, firmware, port):
     
     try:
         print(f"Flashing FEB with firmware {firmware} on port {port}")
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        result = subprocess.run(command, check=True)
         time.sleep(0.5)
         print("FEB flashed successfully")
         return True
@@ -130,11 +131,12 @@ def main(channels, baud, firmware, port, rc, hv):
             print(f"Address change failed for channel {channel}")
             continue
         
-        successful_channels.append(channel-1)
+        successful_channels.append(channel)
         print(f"Channel {channel-1} programmed successfully")
     
     if successful_channels:
-        print(f"Setting programmed channels to data mode: {successful_channels}")
+        successful_channels = np.array(successful_channels)
+        print(f"Setting programmed channels to data mode: {successful_channels-1}")
         success, final_channels = rc.init_data(successful_channels)
         if success:
             print(f"Successfully programmed {len(successful_channels)} channels: {successful_channels}")
@@ -152,7 +154,7 @@ if __name__ == "__main__":
     
     
     # Configurazione di esempio
-    channels = "all"  # o "1,2,3" o [1,2,3]
+    channels = "2"  # o "1,2,3" o [1,2,3]
     baud = 115200
     firmware = "HKL031V4B.hex" 
     port = "/dev/ttyPS1"
