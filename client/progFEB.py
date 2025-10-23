@@ -92,7 +92,7 @@ def changeAddress(index, rc, hv):
         time.sleep(1)
         
         
-        hv.reset_connection()
+        hv.ResetConnection()
         time.sleep(0.5)
         
         
