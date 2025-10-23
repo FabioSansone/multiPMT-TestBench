@@ -119,7 +119,8 @@ class RC:
                     rc_logger.error("No valid channels provided. Aborting operation")
                     return (False, not_valid_channels)
 
-                if self.write(1, value):
+                if self.write(17, value):
+                    self.write(1, value)
                     self.write(0, value)
                     rc_logger.info(f"The channels {channels} have been opened in boot mode")
                     return (True, valid_channels)
