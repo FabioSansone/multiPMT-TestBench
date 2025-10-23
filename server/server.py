@@ -491,7 +491,7 @@ class Server(cmd2.Cmd):
 
                 # Case 1: System not secured -> Only setup and safety
                 if test == 1:
-                    if category not in ["setup", "safety_only"]:
+                    if category not in ["setup", "safety_only", "safety"]:
                         self.poutput("System not in a safe condition (flag_test = 1). Only setup and safety commands are allowed.")
                         return
                     else:
@@ -1113,7 +1113,7 @@ class Server(cmd2.Cmd):
 
     @cmd2.with_argparser(rc_write)
     @cmd2.with_category("RC")
-    @command_guard('safety')
+    @command_guard('safety_only')
     def do_write(self, args: argparse.Namespace) -> None:
         "Function to write user specified values in the Run Control registers"
         self._rc_write(args.rc_write_addr, args.rc_write_value)
@@ -1194,7 +1194,7 @@ class Server(cmd2.Cmd):
 
     @cmd2.with_argparser(hv_prog)
     @cmd2.with_category("HV")
-    @command_guard('safety')
+    @command_guard('safety_only')
     def do_feb_prog(self, args: argparse.Namespace) -> None:
         "Function to program all the FEBs boards connected"
         self._prog_feb(channels=args.channels, port=args.port)
@@ -1241,7 +1241,7 @@ class Server(cmd2.Cmd):
 
     @cmd2.with_argparser(pedestal_parser)
     @cmd2.with_category("ACQ")
-    @command_guard('safety')
+    @command_guard('safety_only')
     def do_pedestal(self, args: argparse.Namespace) -> None:
         self._pedestal()
 
