@@ -6,6 +6,7 @@ import datetime
 import argparse
 import sys
 import mmap
+import datetime
 from types import SimpleNamespace
 
 from bme280 import BME280
@@ -20,18 +21,22 @@ MAX_REG_ADDR = 50
 CHANNELS = [x for x in range(1, 8)]
 
 
-
 #########################################
 logger = logging.getLogger("Monitoring")
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 #Error File Handler
-mon_error_handler = logging.FileHandler('/var/log/monitoring.log')
+mon_error_handler = logging.FileHandler('monitoring.log')
 mon_error_handler.setLevel(logging.WARNING)
 mon_error_handler.setFormatter(formatter)
 
 logger.addHandler(mon_error_handler)
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 
 pymodbus_logger = logging.getLogger("pymodbus")
@@ -39,6 +44,7 @@ pymodbus_logger.setLevel(logging.WARNING)
 pymodbus_logger.addHandler(mon_error_handler)
 pymodbus_logger.propagate = False
 #########################################
+
 
 
 PING_INTERVAL = 6 
@@ -146,38 +152,78 @@ class Client:
 
 
 
-    def close_connection(self):
+    def close_connection(self, terminate_context=True):
         if self.client:
             self.client.close()
-        self.context.term()
+        if terminate_context:
+            self.context.term()
+
+    
+
+    def startup(self):
+        try:
+            self.write(1, 127)
+            self.write(0, 127)
+
+            self.write(10, 65)
+
+            self.hv.power_on("all")
+
+            self.write(19, 127)
+        
+        except Exception as e:
+            logger.error(f"Problem occured in the startup phase: {e}")
+    
+
+    def shutdown(self):
+        try:
+            self.write(19, 0)
+
+            self.hv.power_off("all")
+
+            self.write(1, 0)
+            self.write(0, 0)
+        except Exception as e:
+            logger.error(f"Problem occured in the shutdown phase: {e}")
 
 
 
+    def calculate_offset(self, timestamp_ref):
+        try:
+            ref_dt = datetime.datetime.strptime(timestamp_ref, "%Y_%m_%d_%H_%M")
+            return ref_dt - datetime.datetime.now()
+        except ValueError:
+            logger.warning(f"Invalid timestamp_ref format: {timestamp_ref}. Using local time.")
+            return datetime.timedelta(0)
+    
 
-
-    def handle_server(self, freq, timer):
+    def handle_server(self, freq, timer, timestamp_ref):
 
         poller = zmq.Poller()
         poller.register(self.client, zmq.POLLIN)
 
         if timer is not None:
-            if timer < freq:
+            if timer <= freq:
                 logger.warning(f"The frequency value, {freq}, is greater than the timer value {timer}. It is not possible to acquire data. Timer has been changed to frequency value plus 10 seconds")
                 timer = freq + 20
 
         start_time = time.time()
+
+        off = self.calculate_offset(timestamp_ref)
                     
         while not timer or (time.time() - start_time <= timer):
             start_freq = time.time()
             events = dict(poller.poll(timeout=100))
-            if self.client in events and self.client.recv() == b"Stop":
-                logger.info("Clients have been halted by the server")
-                self.close_connection()
-                return None
+            if self.client in events:
+                message = self.client.recv()
+                if message == b"Stop":
+                    self.shutdown()
+                    logger.info("Client halted by server")
+                    return "Reconnect"
             
-            self.read_mon_data()
-            self.read_rates()
-            self.read_feb()
+            self.read_mon_data(off)
+            self.read_rates(off)
+            self.read_feb(off)
 
             delta = freq - (time.time() - start_freq)
             time.sleep(max(delta, 0.01))
@@ -192,15 +238,25 @@ class Client:
             
             freq = int(config["freq"])
             timer = int(config["timer"]) if config["timer"] else None
-    
+            timestamp_ref = config["timestamp_ref"]
 
-            self.handle_server(freq, timer)
+            logger.info("Waiting for 'Start' signal from server...")
+            start_signal = self.client.recv()
+            if start_signal == b"Start":
+                logger.info("Received 'Start' from server, beginning acquisition.")
+                self.startup()
+                self.handle_server(freq, timer, timestamp_ref)
+            else:
+                logger.error(f"Unexpected message from server: {start_signal}")
+                return None
+                
+
 
         except KeyboardInterrupt:
             logger.info("Client interrupted")
             self.client.send(b"StopC")
-            self.close_connection()
-            return "Reconnect"
+            self.close_connection(terminate_context=True)
+            return "Stop"
 
         except zmq.ZMQError as e:
             logger.error(f"Connection error: {e}")
@@ -222,7 +278,7 @@ class Client:
 
 
 
-    def read_mon_data(self):
+    def read_mon_data(self, offset):
 
         if self.client is None:
             return None
@@ -231,7 +287,7 @@ class Client:
             data_bme = self.bme.readReg()
             data_tla = self.tla.readAll()
 
-            timestamp = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
+            timestamp = (datetime.datetime.now() + offset).strftime('%Y_%m_%d_%H_%M')
 
             data = {}
             data["type"] = "data"
@@ -267,6 +323,21 @@ class Client:
       return True
     
 
+    def write(self, addr, value):
+        if (self.checkRegBoundary(self.auto_int(addr))):
+
+            try:
+                self.regs[addr*4:(addr*4)+4] = int.to_bytes(value, 4, byteorder='little')
+                return True
+            except:
+                logger.error(f'E: write register error')
+                return False
+
+        else:
+            logger.error(f'E: register address outside boundary - min:0 max:{self.maxRegisterAddress}')
+            return False
+    
+
 
     def read(self, addr):
         if (self.checkRegBoundary(self.auto_int(addr))):
@@ -278,13 +349,13 @@ class Client:
 
 
 
-    def read_rates(self):  
+    def read_rates(self, offset):  
         if self.client is None:
             return None
         
         try:
             reg_value = {}
-            timestamp = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
+            timestamp = (datetime.datetime.now() + offset).strftime('%Y_%m_%d_%H_%M')
 
             reg_value["type"] = "data"
             reg_value["data_type"] = "rc_data"
@@ -309,11 +380,11 @@ class Client:
         logger.info(f"This is the list of not valid channels: {not_valid}")
         return valid
     
-    def read_feb(self):
+    def read_feb(self, offset):
         if self.client is None:
             return None
         try:
-            data = self.hv.readVolt(CHANNELS)
+            data = self.hv.readVolt(CHANNELS, offset)
             self.send_json(data) 
         except Exception as e:
             logger.critical(f"Unexpected problems when reading hv data: {e}")
@@ -332,11 +403,11 @@ class Client:
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", action="store", type=int, help="The port of the connection with the server (default:9000)", default=9000)
+    parser.add_argument("--port", action="store", type=int, help="The port of the connection with the server (default:9001)", default=9001)
     parser.add_argument("--server_ip", action="store", type=str, help="The ip of the server (default:172.16.24.102)", default="172.16.24.102")
     parser.add_argument("--client_id", action="store", type=str, help="The id of the client (default:mon_249)", default="mon_249")
     parser.add_argument("--hv_port", action="store", type=str, help="The serial port of the modbus FEB (default:/dev/ttyPS1)", default="/dev/ttyPS1")
-    parser.add_argument("--hv_interface", action="store", type=str, help="How to connect modbus to the FEBs (default:tcp)", default="tcp")
+    parser.add_argument("--hv_interface", action="store", type=str, help="How to connect modbus to the FEBs (default:rtu)", default="rtu")
 
 
     args = parser.parse_args()
@@ -357,22 +428,29 @@ if __name__ == "__main__":
     hv = HV(params=params)
 
     client = Client(port=args.port, server_ip=args.server_ip, client_id=args.client_id, bme=bme, tla=tla, hv=hv, hv_port=args.hv_port)
+    client.start_connection()
+
+    if not client.handshake():
+        logger.warning("Handshake failed. Exiting...")
+        client.close_connection(terminate_context=False)
+        sys.exit(-1)
+       
 
     while True:
-        client.start_connection()
 
-        if not client.handshake():
-            logger.error("Handshake failed. Exiting...")
-            break
 
         result = client.send_data()
-        if result != "Reconnect":
-            logger.error("Client terminated due to an unexpected error")
+
+        if result == "Reconnect":
+            logger.info("Acquisition stopped by server. Waiting for next start command...")
+            continue
+
+        elif result is None:
+            logger.error("Unexpected termination. Retrying in 10 seconds...")
+            time.sleep(10)
+            continue
+
+        else:
+            logger.critical("Client shutting down permanently due to unrecoverable error.")
+            client.close_connection(terminate_context=True)
             break
-            
-
-    
-
-
-
-            

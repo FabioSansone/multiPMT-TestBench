@@ -10,11 +10,15 @@ from hv_client import HV
 from mon_conf import MON
 import prog_FEB
 import argparse
-
+from types import SimpleNamespace
 import socket
 import struct
 import fcntl
 
+
+
+#########################################
+# Logging
 #########################################
 logger = logging.getLogger("Client")
 logger.setLevel(logging.INFO)
@@ -31,16 +35,20 @@ logger.addHandler(client_error_handler)
 #########################################
 
 def get_broadcast_address(interface='eth0'):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ip = socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(), 0x8919, struct.pack('256s', interface[:15].encode()))[20:24])
-    netmask = socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(), 0x891b, struct.pack('256s', interface[:15].encode()))[20:24])
-    
-    ip_parts = list(map(int, ip.split('.')))
-    mask_parts = list(map(int, netmask.split('.')))
-    broadcast_parts = [ip_parts[i] | (~mask_parts[i] & 0xFF) for i in range(4)]
-    return ".".join(map(str, broadcast_parts))
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ip = socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(), 0x8919, struct.pack('256s', interface[:15].encode()))[20:24])
+        netmask = socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(), 0x891b, struct.pack('256s', interface[:15].encode()))[20:24])
+        
+        ip_parts = list(map(int, ip.split('.')))
+        mask_parts = list(map(int, netmask.split('.')))
+        broadcast_parts = [ip_parts[i] | (~mask_parts[i] & 0xFF) for i in range(4)]
+        return ".".join(map(str, broadcast_parts))
+    except (OSError, IOError) as e:
+        logger.warning(f"Impossibile ottenere broadcast per {interface}: {e}")
+        return "255.255.255.255"
 
 
 def discover_server_ip(broadcast_ip, port, timeout=3):
@@ -62,22 +70,21 @@ def discover_server_ip(broadcast_ip, port, timeout=3):
 PING_INTERVAL = 6 # s
 POLLER_COMMANDS_TIMEOUT = 100 # ms
 
-context = zmq.Context()
-rc = RC()
-hv = HV()
-mon = MON()
+
 
 class Client:
-    def __init__(self, server_ip, port=8001, hv_port="/dev/ttyPS1"):
+    def __init__(self, context, server_ip, rc, hv, port=8001):
+        self.context = context
+        self.rc = rc
+        self.hv = hv
         self.port = port
-        self.hv_port = hv_port
         self.client = None
         self.server_ip = server_ip
         self.client_id = b"Client"
 
     def send_json(self, data):
         try:
-            return self.client.send(json.dumps(data).encode("utf-8"))
+            self.client.send(json.dumps(data).encode("utf-8"))
         except Exception as e:
             logger.error(f"Something unexpected happened when sending data: {e}")
 
@@ -88,11 +95,12 @@ class Client:
             logger.error("Error decoding JSON message")
         except Exception as e:
             logger.error(f"Unexpected error receiving data: {e}")
-
+        return None
+        
     def start_connection(self):
         try:
             server_address = f"tcp://{self.server_ip}:{self.port}"
-            self.client = context.socket(zmq.DEALER)
+            self.client = self.context.socket(zmq.DEALER)
             self.client.setsockopt(zmq.IDENTITY, self.client_id)
             self.client.connect(server_address)
             logger.info(f"Client started on port {self.port} and connected to {server_address}")
@@ -121,29 +129,33 @@ class Client:
                     self.client.send(b"Connection successful")
                     evproducer = self.client.recv()
                     if evproducer == b"EV":
-                        rc.write(1, 127)
+                        self.rc.write(1, 127)
                         time.sleep(0.1)
-                        rc.write(0, 127)
+                        self.rc.write(0, 127)
                         time.sleep(0.1)
-                        rc.write(10, 65)
+                        self.rc.write(10, 65)
                         time.sleep(0.1)
-                        rc.write(19, 0)
+                        self.rc.write(19, 0)
                         time.sleep(0.1)
-                        rc.write(15, 0)
+                        self.rc.write(15, 0)
                         time.sleep(0.1)
-                        rc.write(16, 0)
+                        self.rc.write(16, 0)
                         time.sleep(0.1)
                         exec_command = ["/root/client/evproducer.sh", self.server_ip]
                         logger.info(f"Executing evproducer with: {exec_command}")
-                        process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        logger.info("Evproducer has started successfully")
+                        try:
+                            process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            logger.info("Evproducer has started successfully")
+                        except Exception as e:
+                            logger.error(f"Failed to start evproducer: {e}")
+                            
                         self.client.send(b"EV Success")
 
                         hv_setting = self.receive_json()
                         if hv_setting == 0:
                             logger.info("Setting the HV Configuration and powering on the system")
-                            hv.set_hv_init_configuration(channels="all", port="/dev/ttyPS1", voltage_set=1200, threshold_set=100, limit_trip_time=2, limit_voltage=100, limit_current=5, limit_temperature=50, rate_up=25, rate_down=25)
-                            hv.power_on(channels="all", port="/dev/ttyPS1")
+                            self.hv.setInitConfiguration(channels="all", voltage_set=1200, threshold_set=100, limit_trip_time=2, limit_voltage=100, limit_current=5, limit_temperature=50, rate_up=25, rate_down=25)
+                            self.hv.power_on(channels="all")
                             self.client.send(b"HV Success")
                             connected = True
                             return True
@@ -167,10 +179,13 @@ class Client:
             try:
                 logger.info("Waiting for server command")
                 events = dict(poller.poll())
+                if not events:
+                    continue
+                
                 if self.client in events:
                     server_command = self.receive_json()
                     logger.info(f"Received the following command {server_command}")
-                    if server_command is None:
+                    if server_command is None or not server_command:
                         logger.error("Failed to receive valid command from server.")
                         continue
                     
@@ -196,7 +211,7 @@ class Client:
                         if command == "write_address":
                             value = server_command.get("value")
                             addr = server_command.get("address")
-                            if rc.write(server_command.get("address"), server_command.get("value")):
+                            if self.rc.write(server_command.get("address"), server_command.get("value")):
                                 write_t = {"response": "rc_write", "result": f"Successfully wrote the value {value} in register {addr}"}
                                 self.send_json(write_t)
                                 logger.info(f"Successfully wrote the value {value} in register {addr}")
@@ -207,7 +222,7 @@ class Client:
                         
                         if command == "rc_monitoring":
                             regs = server_command.get("regs")
-                            monitoring = {"response": "rc_mon", "result": rc.reg_monitoring(regs=regs)}
+                            monitoring = {"response": "rc_mon", "result": self.rc.reg_monitoring(regs=regs)}
                             self.send_json(monitoring)
                     
                     elif cmd_type == "hv_command":
@@ -224,55 +239,56 @@ class Client:
                             limit_temperature = server_command.get("limit_temperature")
                             rate_up = server_command.get("rate_up")
                             rate_down = server_command.get("rate_down")
-                            init_conf = {"response": "hv_init_conf", "result": hv.set_hv_init_configuration(port, channel, voltage_set, threshold_set, limit_trip_time, limit_voltage, limit_current, limit_temperature, rate_up, rate_down)}
+                            init_conf = {"response": "hv_init_conf", "result": self.hv.setInitConfiguration(channels=channel, voltage_set=voltage_set, threshold_set=threshold_set, 
+                                                                                                       limit_trip_time=limit_trip_time, limit_voltage=limit_voltage, limit_current=limit_current, 
+                                                                                                       limit_temperature=limit_temperature, rate_up=rate_up, rate_down=rate_down) }
                             self.send_json(init_conf)
 
                         if command == "set_voltage":
                             port = server_command.get("port")
                             channel = server_command.get("channel")
                             voltage_set = server_command.get("voltage_set")    
-                            v_set = {"response": "hv_voltage_set", "result": hv.set_voltage(channel, voltage_set, port)}
+                            v_set = {"response": "hv_voltage_set", "result": self.hv.set_voltage(channels=channel, voltage_set=voltage_set)}
                             self.send_json(v_set)
                         
                         if command == "set_threshold":
                             port = server_command.get("port")
                             channel = server_command.get("channel")
                             threshold_set = server_command.get("threshold_set")
-                            t_set = {"response": "hv_threshold_set", "result": hv.set_threshold(channel, threshold_set, port)}
+                            t_set = {"response": "hv_threshold_set", "result": self.hv.set_threshold(channels=channel, threshold_set=threshold_set)}
                             self.send_json(t_set)
 
                         if command == "set_power_on":
                             port = server_command.get("port")
                             channel = server_command.get("channel")
-                            set_power_on = {"response": "hv_power_on", "result": hv.power_on(channel, port)}
+                            set_power_on = {"response": "hv_power_on", "result": self.hv.power_on(channels=channel)}
                             self.send_json(set_power_on)
 
                         if command == "set_power_off":
                             port = server_command.get("port")
                             channel = server_command.get("channel")
-
-
-                            set_power_off = {
-
-                                "response": "hv_power_off",
-                                "result" : hv.power_off(channel, port)
-
-                            }
-
+                            set_power_off = {"response": "hv_power_off", "result" : self.hv.power_off(channels=channel)}
                             self.send_json(set_power_off)
 
                         
                         if command == "hv_calibration":
                             channel = server_command.get("channels")
                             port = server_command.get("port")
-                            set_hv_calib = {"response" : "hv_calibration", "result" : hv.channels_calib(channels=channel, port=port)}
+                            set_hv_calib = {"response" : "hv_calibration", "result" : self.hv.channelsCalib(channels=channel)}
                             self.send_json(set_hv_calib)
 
                         if command == "hv_serial":
                             channel = server_command.get("channels")
                             port = server_command.get("port")
-                            set_hv_serial = {"response" : "hv_serial", "result": hv.get_serial(channels=channel, port=port)}
+                            set_hv_serial = {"response" : "hv_serial", "result": self.hv.getSerial(channels=channel)}
                             self.send_json(set_hv_serial)
+                        
+                        if command == "set_serial":
+                            channels = server_command.get("channels")
+                            port = server_command.get("port")
+                            serials = server_command.get("serials")
+                            set_pmt_serial = {"response" : "set_serial", "result": self.hv.setAllPMTSerial(channels=channels,serials=serials)}
+                            self.send_json(set_pmt_serial)
 
                         if command == "hv_prog_feb":
                             channel = server_command.get("channels")
@@ -283,40 +299,7 @@ class Client:
                             self.send_json(set_start_up)
                     
 
-                    elif cmd_type == "mon_command":
-                        command = server_command.get("command")
-                        if command == "monitoring":
-                            rc_flag = 0
-                            hv_flag = 0
-                            mon_flag = 0
-                            result = []
-
-                            rc_flag, hv_flag, mon_flag = int(server_command.get("rc_flag")), int(server_command.get("hv_flag")), int(server_command.get("mon_flag"))
-                            
-                            if rc_flag == 1:
-                                try:
-                                    rc_mon = rc.reg_monitoring([20,21,22,23,24,25,26])
-                                    result.append(rc_mon)
-                                except:
-                                    pass
-                            
-                            if hv_flag == 1:
-                                try:
-                                    hv_mon = hv.read_volt(channels=[1,2,3,4,5,6,7], port="/dev/ttyPS1")
-                                    result.append(hv_mon)
-                                except:
-                                    pass
-                            
-                            if mon_flag == 1:
-                                try:
-                                    mon_mon = mon.read_mon_data()
-                                    result.append(mon_mon)
-                                except:
-                                    pass
-                            
-
-                            set_monitoring_all = {"response": "monitoring", "result": result}
-                            self.send_json(set_monitoring_all)
+                    
 
 
                             
@@ -340,6 +323,7 @@ if __name__ == "__main__":
     parser.add_argument("--server_ip", action="store", type=str, help="The ip of the server")
     parser.add_argument("--port", action="store", type=int, help="The port of the connection with the server (default:8001)", default=8001)
     parser.add_argument("--hv_port", action="store", type=str, help="The serial port of the modbus FEB (default:/dev/ttyPS1)", default="/dev/ttyPS1")
+    parser.add_argument("--hv_interface", action="store", type=str, help="How to connect modbus to the FEBs (default:tcp)", default="tcp")
     parser.add_argument("--interface", action="store", type=str, help="The network interface of the client (default=eth0)", default="eth0")
 
     args = parser.parse_args()
@@ -356,8 +340,23 @@ if __name__ == "__main__":
         else:
             logger.info(f"Discovered server IP: {server_ip}")
 
+    if args.hv_interface == "tcp":
+        params = SimpleNamespace(mode = 'tcp',
+                            host = 'localhost',
+                            port = 502)
+    else:
+        params = SimpleNamespace(mode = 'rtu',
+                            host = 'localhost',
+                            port = args.hv_port)
+    
+    
 
-    client = Client(server_ip=args.server_ip, port=args.port, hv_port=args.hv_port)
+    context = zmq.Context()
+    rc = RC()
+    hv = HV(params=params)
+    
+    
+    client = Client(context=context, server_ip=server_ip, rc=rc, hv=hv, port=args.port)
 
     try:
         while True:

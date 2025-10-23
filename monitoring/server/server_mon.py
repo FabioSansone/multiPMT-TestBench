@@ -95,12 +95,12 @@ class Server:
         key = f"{client_id.decode()}_{data_type}"
         if key not in self.opened_files:
             if Path("/swgo").exists():
-                base_path = Path("/swgo/Test/SWGO_Testbench/multiPMT")
+                base_path = Path("/swgo/multiPMT")
             else:
-                base_path = Path.home() / "Test"
+                base_path = Path.home() / "multiPMT"
                 base_path.mkdir(parents=True, exist_ok=True)  # Crea Test se non esiste
 
-            filepath = base_path / "calibration" / f"batch_{batch_num}" / "monitoring" / self.check_file_exists(Server.get_file_name(data_type))
+            filepath = base_path / f"multi_{client_id.decode()}" / "monitoring" / self.check_file_exists(Server.get_file_name(data_type))
             filepath.parent.mkdir(parents=True, exist_ok=True)
             file = open(filepath, 'a', newline='')
             writer = csv.writer(file)

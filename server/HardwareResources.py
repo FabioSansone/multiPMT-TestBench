@@ -334,16 +334,51 @@ def HVGetSerialFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:
             hv_serial = socket.recv_multipart()
             response_serial = json.loads(hv_serial[1].decode("utf-8"))
             if hv_serial[0] == client and response_serial.get("response") == "hv_serial":
-                MonitoringProcessing.WriteSerialChannels(response_serial.get("result"), batch)
+                #MonitoringProcessing.WriteSerialChannels(response_serial.get("result"), batch)
                 output_func("Serial Numbers of the channels selected acquired and stored successfully")
+                return response_serial.get("result")
             else:
                 output_func("It was not possible to get the serial numbers of the channels selected. See the client log for more details")
+                return None
         except Exception as e:
             output_func(f"HV Serial Number problem occured: {e}")
+            return None
         except json.JSONDecodeError:
             output_func("Failed to decode the serial number response.")
+            return None
+
+
+def HVSetSerialPMT(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], serials:List[str], batch:int, output_func: Callable[[str], None]) -> None:
+
+    output_func("Setting the serial numbers of the PMTs")
+
+    command_hv_set_serial = {
+        "type": "hv_command",
+        "command": "set_serial",
+        "channels": channels, 
+        "port": port,
+        "serials" : serials
+    }
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_hv_set_serial).encode("utf-8")])
+        try:
+            hv_serial = socket.recv_multipart()
+            response_serial = json.loads(hv_serial[1].decode("utf-8"))
+            if hv_serial[0] == client and response_serial.get("response") == "set_serial":
+                output_func("Serial Numbers of the channels set successfully")
+                return response_serial.get("result")
+            else:
+                output_func("It was not possible to set the serial numbers of the channels selected. See the client log for more details")
+                return None
+        except Exception as e:
+            output_func(f"HV Serial Number problem occured: {e}")
+            return None
+        except json.JSONDecodeError:
+            output_func("Failed to decode the set serial number response.")
+            return None
         
-def HVStartUp(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], baud: int, firmware:str, output_func: Callable[[str], None]) -> None:
+def HVProgFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], baud: int, firmware:str, output_func: Callable[[str], None]) -> None:
 
     output_func("Programming the FEBs")
 

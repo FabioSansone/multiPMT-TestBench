@@ -48,7 +48,7 @@ class HV:
                 bytesize=8,
                 parity="N",
                 stopbits=1,
-                timeout=0.5
+                timeout=1
         )
 
             if not self.client.connect():
@@ -747,11 +747,14 @@ class HV:
         
     
 
-    def readVolt(self, channels):
+    def readVolt(self, channels, offset = None):
         hv_list = self.getChannels(channels)
 
         hv_value = {}
-        timestamp = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
+        if offset is None:
+            timestamp = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
+        else:
+            timestamp = (datetime.datetime.now() + offset).strftime('%Y_%m_%d_%H_%M')
 
         hv_value["type"] = "data"
         hv_value["data_type"] = "hv_data"
@@ -791,10 +794,6 @@ class HV:
                 hv_logger.warning(f"Channel {hv} non aperto correttamente.")
         return info
 
-    
-
-    #Aggiungere questo ultimo punto come condizione iniziale necessaria se non trova un file in cui andare a reperire le informazioni che sono già scritte
-    #La prima volta il server scriverà il file
     
     
     

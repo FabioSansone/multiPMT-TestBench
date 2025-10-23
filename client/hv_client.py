@@ -1,251 +1,383 @@
-import minimalmodbus
-import time
-import datetime
-import struct
-import numpy as np
+import pymodbus.client as ModbusClient
+from pymodbus import (
+    FramerType,
+    ModbusException
+)
 import logging
+import struct
+import time
+import numpy as np
+import datetime
 
-logger_hv = logging.getLogger("Client")
+hv_logger = logging.getLogger("Client")
+hv_logger.info("Avviso da pymodbus dentro hv.py")
 
-class HV():
 
-    def __init__(self) -> None:
-        
+
+#NB#
+# addr corrisponde al channel della scheda mentre port corrisponde alla seriale del tipo /dev/ttyPS1
+# La porta indicata nella funzione ModbusTcpClient è quella per la connessione tcp
+# La porta seriale per la connessione della scheda è inclusa dentro params
+###
+
+class HVReadError(Exception):
+    pass
+
+
+class HV:
+
+    def __init__(self, params) -> None:
+
+        self.client = None
+        self.params = params
         self.dev = None
-        self.address = None
-        self.maxAddress = 7
+        self.addr = None
 
-    def probe(self, serial, addr):
-        dev = minimalmodbus.Instrument(serial, addr)
-        dev.serial.baudrate = 115200
-        dev.serial.timeout = 0.5
-        dev.mode = minimalmodbus.MODE_RTU
 
-        found = False
-        for _ in range(0, 3):
-            try:
-                dev.read_register(0x00)  # read modbus address register
-                found = True
-                break
-            except IOError:
-                pass
+        if self.params.mode == 'tcp':
+            self.client = ModbusClient.ModbusTcpClient(self.params.host, port=502, framer=FramerType.SOCKET) 
+            if not self.client.connect():
+                raise ConnectionError(f"Host not reachable or mbusd not running ({self.params.host})")
 
-        return found
+        elif self.params.mode == 'rtu':
+         
+            self.client = ModbusClient.ModbusSerialClient(
+                self.params.port, 
+                framer=FramerType.RTU, 
+                baudrate=115200,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+                timeout=1
+        )
 
-    def open(self, serial, addr): #Serial corresponds to the port and addr to the channel
-        if self.probe(serial, addr):
-            self.dev = minimalmodbus.Instrument(serial, addr)
-            self.dev.serial.baudrate = 115200
-            self.dev.serial.timeout = 0.5
-            self.dev.mode = minimalmodbus.MODE_RTU
-            self.address = addr
-            return True
-        else:
+            if not self.client.connect():
+                raise ConnectionError(f"Host not reachable or mbusd not running ({self.params.host})")
+ 
+    
+    def _safe_read(self, addr, count, slave, desc="unknown"):
+        rr = None
+        try:
+            rr = self.client.read_holding_registers(address=addr, count=count, slave=slave)
+            if rr is None or rr.isError():
+                raise HVReadError(f"Invalid response when reading {desc} at {hex(addr)}")
+            return rr.registers
+        except ModbusException as e:
+            raise HVReadError(f"Exception during read of {desc}: {e}")
+    
+    def _safe_write(self, addr, value, slave, desc="unknown"):
+        try:
+            rr = self.client.write_register(address=addr, value=value, slave=slave)
+            if rr is None or rr.isError():
+                raise HVReadError(f"Invalid response when writing {desc} at {hex(addr)}")
+        except ModbusException as e:
+            raise HVReadError(f"Exception during write of {desc}: {e}")
+
+
+
+    
+    def handleInterrupt(self):
+        try:
+            if hasattr(self.client, "connected") and not self.client.connected:
+                self.client.close()
+        except Exception as e:
+            hv_logger.warning(f"Errore durante il controllo dello stato del client: {e}")
+
+
+
+
+    def open(self, addr):
+
+        self.handleInterrupt()
+
+        rr = None
+        try:
+            rr = self.client.read_holding_registers(address=0, count=1, slave=addr)
+        except ModbusException as e:
+            hv_logger.error(e)
+            return False 
+
+        if rr.isError() or rr is None:
+            hv_logger.error("Problem occured opening the selected modbus address")
             return False
         
-    def checkAddressBoundary(self, channel):
-        return channel >= 1 and channel <= 20
+        self.addr = addr
+        return True
+    
+    def checkAddressBoundary(self, addr):
+        return addr >= 1 and addr <= 20
     
     def isConnected(self):
-        return self.address is not None
-
+        return self.addr is not None
+    
     def getAddress(self):
-        return self.address
+        return self.addr
     
+    def checkConnection(self):
+        if not self.isConnected():
+            hv_logger.error("Was not possible to check for connection")
+            return False
+        return True
 
-    def getStatus(self):
-        return self.dev.read_register(0x0006)
-
-    def getVoltage(self):
-        lsb = self.dev.read_register(0x002A)
-        msb = self.dev.read_register(0x002B)
-        value = (msb << 16) + lsb
-        return value / 1000
-
-    def getVoltageSet(self):
-        return self.dev.read_register(0x0026)
-
-    def setVoltageSet(self, value):
-        self.dev.write_register(0x0026, value)
-
-    def getCurrent(self):
-        lsb = self.dev.read_register(0x0028)
-        msb = self.dev.read_register(0x0029)
-        value = (msb << 16) + lsb
-        return value / 1000
-
-    def getTemperature(self):
-        return self.dev.read_register(0x0007)
-
-    def getRate(self, fmt=str):
-        rup = self.dev.read_register(0x0023)
-        rdn = self.dev.read_register(0x0024)
-        if fmt == str:
-            return f'{rup}/{rdn}'
-        else:
-            return rup, rdn
-
-    def setRateRampup(self, value):
-        self.dev.write_register(0x0023, value, functioncode=6)
-
-    def setRateRampdown(self, value):
-        self.dev.write_register(0x0024, value)
-
-    def getLimit(self, fmt=str):
-        lv = self.dev.read_register(0x0027)
-        li = self.dev.read_register(0x0025)
-        lt = self.dev.read_register(0x002F)
-        ltt = self.dev.read_register(0x0022)
-        if fmt == str:
-            return f'{lv}/{li}/{lt}/{ltt}'
-        else:
-            return lv, li, lt, ltt
-
-    def setLimitVoltage(self, value):
-        self.dev.write_register(0x0027, value)
-
-    def setLimitCurrent(self, value):
-        self.dev.write_register(0x0025, value)
-
-    def setLimitTemperature(self, value):
-        self.dev.write_register(0x002F, value)
-
-    def setLimitTriptime(self, value):
-        self.dev.write_register(0x0022, value)
-
-    def setThreshold(self, value):
-        self.dev.write_register(0x002D, value)
-
-    def getThreshold(self):
-        return self.dev.read_register(0x002D)
-
-    def getAlarm(self):
-        return self.dev.read_register(0x002E)
-
-    def getVref(self):
-        return self.dev.read_register(0x002C) / 10
-
-    def powerOn(self):
-        self.dev.write_bit(1, True)
-
-    def powerOff(self):
-        self.dev.write_bit(1, False)
-
-    def reset(self):
-        self.dev.write_bit(2, True)
-    
-    def convert_temp(self, t):
-        quoz = (t & 0xFF) / 1000.
-        integer = (t >> 8) & 0xFF
-        return round(integer + quoz, 2)
-
-    def getInfo(self):
-        fwver = self.dev.read_string(0x0002, 1)
-        pmtsn = self.dev.read_string(0x0008, 6)
-        hvsn = self.dev.read_string(0x000E, 6)
-        febsn = self.dev.read_string(0x0014, 6)
-        dev_id = self.dev.read_registers(0x004, 2)
-        return fwver, pmtsn, hvsn, febsn, (dev_id[1] << 16) + dev_id[0]
-
-    def readMonRegisters(self):
-        monData = {}
-        baseAddress = 0x0000
-        regs = self.dev.read_registers(baseAddress, 48)
-        monData['status'] = regs[0x0006]
-        monData['Vset'] = regs[0x0026]
-        monData['V'] = ((regs[0x002B] << 16) + regs[0x002A]) / 1000
-        monData['I'] = ((regs[0x0029] << 16) + regs[0x0028]) / 1000
-        monData['T'] = self.convert_temp(regs[0x0007])
-        monData['rateUP'] = regs[0x0023]
-        monData['rateDN'] = regs[0x0024]
-        monData['limitV'] = regs[0x0027]
-        monData['limitI'] = regs[0x0025]
-        monData['limitT'] = regs[0x002F]
-        monData['limitTRIP'] = regs[0x0022]
-        monData['threshold'] = regs[0x002D]
-        monData['alarm'] = regs[0x002E]
-        return monData
-    
-    def setModbusAddress(self, addr):
-        self.dev.write_register(0x0000, addr)
-    
-
-    def check_address(self, port, channel):
-        if self.open(port, channel):
-            if self.getAddress() == channel and self.isConnected() : #Address and channel as variables go from 1 to 7
+        
+    def checkAddress(self, addr):
+        if self.open(addr):
+            if self.getAddress() == addr and self.isConnected() : #Address and channel as variables go from 1 to 7
                 return True
             else:
-                print("The HV board selected doesn't match the channel interested")
+                hv_logger.warning("The HV board selected doesn't match the channel interested")
                 return False
         else:
+            hv_logger.warning("It was not possible to check the address: error in opening the selected modbus address")
             return False
     
+    def setModbusAddress(self, addr, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x00, value=addr, slave=slave, desc="address set")
+
+
+    def getStatus(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(address=6, count=1, slave=slave, desc="status")
+        return rr[0]
+
+            
+
+    def getVoltage(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x2A, count=2, slave=slave, desc="voltage")
+        rr.reverse()
+        return self.client.convert_from_registers(rr, data_type=self.client.DATATYPE.INT32) / 1000
+
+        
+    def getVoltageSet(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x26, count=1, slave=slave, desc="voltage set")
+        return rr[0]
+
+
+    def setVoltageSet(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x26, value=value, slave=slave, desc="voltage set")
+
+    
+    def getCurrent(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x28, count=2, slave=slave, desc="current")
+        rr.reverse()
+        return self.client.convert_from_registers(rr, data_type=self.client.DATATYPE.INT32) / 1000
+
+    
+    def getTemperature(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x07, count=1, slave=slave, desc="temperature")
+        return rr[0]
+
+    
+    def convertTemperature(self, value):
+        q = (value & 0xFF) / 1000
+        i = (value >> 8) & 0xFF
+        return round(q+i, 2)
+    
+    def getRate(self, fmt=str, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x23, count=2, slave=slave, desc="rate")
+        rup = rr[0]
+        rdn = rr[1]
+        return f'{rup}/{rdn}' if fmt == str else (rup, rdn)
+
+    
+    def setRateRampup(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x23, value=value, slave=slave, desc="rate ramp-up")
+
+    
+    def setRateRampdown(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x24, value=value, slave=slave, desc="rate ramp-down")
+
+    
+    def getLimit(self, fmt=str, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0, count=48, slave=slave, desc="limits")
+        lv = rr[0x27]
+        li = rr[0x25]
+        lt = rr[0x2F]
+        ltt = rr[0x22]
+        return f'{lv}/{li}/{lt}/{ltt}' if fmt == str else (lv, li, lt, ltt)
+
+
+    def setLimitVoltage(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x27, value=value, slave=slave, desc="limit voltage")
+
+    
+    def setLimitCurrent(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x25, value=value, slave=slave, desc="limit current")
+
+    
+    def setLimitTemperature(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x2F, value=value, slave=slave, desc="limit temperature")
+
+    
+    def setLimitTriptime(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x22, value=value, slave=slave, desc="limit trip time")
+
+    
+    def setThreshold(self, value, slave=None):
+        slave = self.addr if slave is None else slave
+        self._safe_write(addr=0x2D, value=value, slave=slave, desc="threshold")
+
+    
+    def getThreshold(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x2D, count=1, slave=slave, desc="threshold")
+        return rr[0]
+
+    
+    def getAlarm(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x2E, count=1, slave=slave, desc="alarm")
+        return rr[0]
+
+    
+    def getVref(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x2E, count=1, slave=slave, desc="vref")
+        return rr[0] / 10
+
+    
+    def powerOn(self, slave=None):
+        slave = self.addr if slave==None else slave
+        try:
+            self.client.write_coil(address=1, value=True, slave=slave)
+        except ModbusException as e:
+            hv_logger.error(e)
+            raise e
+    
+    def powerOff(self, slave=None):
+        slave = self.addr if slave==None else slave
+        try:
+            self.client.write_coil(address=1, value=False, slave=slave)
+        except ModbusException as e:
+            hv_logger.error(e)
+            raise e
+    
+    def reset(self, slave=None):
+        slave = self.addr if slave==None else slave
+        try:
+            self.client.write_coil(address=2, value=True, slave=slave)
+        except ModbusException as e:
+            hv_logger.error(e)
+            raise e
+    
+    def getInfo(self, slave=None):
+        slave = self.addr if slave==None else slave
+        l = None
+        try:
+            l = self.client.read_holding_registers(address=0x02, count=1, slave=slave).registers
+            fwver = struct.pack(f'>{len(l)}h', *l).decode()
+            l = self.client.read_holding_registers(address=0x08, count=6, slave=slave).registers
+            pmtsn = struct.pack(f'>{len(l)}h', *l).decode()
+            l = self.client.read_holding_registers(address=0x0E, count=6, slave=slave).registers
+            hvsn = struct.pack(f'>{len(l)}h', *l).decode()
+            l = self.client.read_holding_registers(address=0x14, count=6, slave=slave).registers
+            febsn = struct.pack(f'>{len(l)}h', *l).decode()
+            l = self.client.read_holding_registers(address=0x04, count=2, slave=slave).registers
+            devid = (l[1] << 16) + l[0]
+            return (fwver, pmtsn, hvsn, febsn, devid)
+        except ModbusException as e:
+            hv_logger.error(e)
+            raise e
+    
+    def readMonRegisters(self, slave=None):
+        slave = self.addr if slave==None else slave
+        rr = None
+        monData = {}
+        try:
+            rr = self.client.read_holding_registers(address=0, count=48, slave=slave)
+            monData['status'] = rr.registers[0x0006]
+            monData['Vset'] = rr.registers[0x0026]
+            monData['V'] = ((rr.registers[0x002B] << 16) + rr.registers[0x002A]) / 1000
+            monData['I'] = ((rr.registers[0x0029] << 16) + rr.registers[0x0028]) / 1000
+            monData['T'] = self.convertTemperature(rr.registers[0x0007])
+            monData['rateUP'] = rr.registers[0x0023]
+            monData['rateDN'] = rr.registers[0x0024]
+            monData['limitV'] = rr.registers[0x0027]
+            monData['limitI'] = rr.registers[0x0025]
+            monData['limitT'] = rr.registers[0x002F]
+            monData['limitTRIP'] = rr.registers[0x0022]
+            monData['threshold'] = rr.registers[0x002D]
+            monData['alarm'] = rr.registers[0x002E]
+            return monData
+        except ModbusException as e:
+            hv_logger.error(e)
+            raise e
+
+
     def statusString(self, statusCode):
         statuses = {0: 'UP', 1: 'DOWN', 2: 'RUP', 3: 'RDN', 4: 'TUP', 5: 'TDN', 6: 'TRIP'}
         return statuses.get(statusCode, 'undef')
-    
-    def alarmString(self, alarmCode):
-      msg = ' '
-      if (alarmCode == 0):
-         return 'none'
-      if (alarmCode & 1):
-         msg = msg + 'OV '
-      if (alarmCode & 2):
-         msg = msg + 'UV '
-      if (alarmCode & 4):
-         msg = msg + 'OC '
-      if (alarmCode & 8):
-         msg = msg + 'OT '
-      return msg
-    
 
-    def checkConnection(self):
-        if(self.isConnected()):
-            return True
-        else:
-            logger_hv.error(f'HV module not connected - use select command')
-            return False
-        
-    def readCalibRegisters(self):
-        mlsb = self.dev.read_register(0x0030)
-        mmsb = self.dev.read_register(0x0031)
+
+    def alarmString(self, alarmCode):
+        msg = ' '
+        if (alarmCode == 0):
+            return 'none'
+        if (alarmCode & 1):
+            msg = msg + 'OV '
+        if (alarmCode & 2):
+            msg = msg + 'UV '
+        if (alarmCode & 4):
+            msg = msg + 'OC '
+        if (alarmCode & 8):
+            msg = msg + 'OT '
+        return msg
+
+    def readCalibRegisters(self, slave=None):
+        slave = self.addr if slave is None else slave
+        rr = self._safe_read(addr=0x30, count=5, slave=slave, desc="calib reg")
+        mlsb = rr.registers[0]
+        mmsb = rr.registers[1]
+        qlsb = rr.registers[2]
+        qmsb = rr.registers[3]
+        calibt = rr.registers[4]
+
         calibm = ((mmsb << 16) + mlsb)
         calibm = struct.unpack('l', struct.pack('L', calibm & 0xffffffff))[0]
         calibm = calibm / 10000
 
-        qlsb = self.dev.read_register(0x0032)
-        qmsb = self.dev.read_register(0x0033)
         calibq = ((qmsb << 16) + qlsb)
         calibq = struct.unpack('l', struct.pack('L', calibq & 0xffffffff))[0]
         calibq = calibq / 10000
 
-        calibt = self.dev.read_register(0x0034)
         calibt = calibt / 1.6890722
 
-        return calibm, calibq, calibt
+        return (calibm, calibq, calibt)
 
-    def writeCalibSlope(self, slope):
+
+    def writeCalibSlope(self, slope, slave=None):
+        slave = self.addr if slave is None else slave
         slope = int(slope * 10000)
         lsb = (slope & 0xFFFF)
         msb = (slope >> 16) & 0xFFFF
+        self._safe_write(addr=0x30, value=[lsb, msb], slave=slave, desc="write slop")
 
-        self.dev.write_register(0x0030, lsb)
-        self.dev.write_register(0x0031, msb)
-
-    def writeCalibOffset(self, offset):
+    def writeCalibOffset(self, offset, slave=None):
+        slave = self.addr if slave is None else slave
         offset = int(offset * 10000)
         lsb = (offset & 0xFFFF)
         msb = (offset >> 16) & 0xFFFF
-
-        self.dev.write_register(0x0032, lsb)
-        self.dev.write_register(0x0033, msb)
-
-    def writeCalibDiscr(self, discr):
-        discr = int(discr * 1.6890722)
-
-        self.dev.write_register(0x0034, discr)
+        self._safe_write(addr=0x32, value=[lsb, msb], slave=slave, desc="write offset")
     
-
+    def writeCalibDiscr(self, discr, slave=None):
+        slave = self.addr if slave is None else slave
+        discr = int(discr * 1.6890722)
+        self._safe_write(addr=0x34, value=discr, slave=slave, desc="write discr")
+    
 
     def calibration(self) -> None:
         
@@ -253,10 +385,10 @@ class HV():
             return False
 
 
-        logger_hv.warning('WARNING: calibration is a time consuming task')
+        hv_logger.warning('WARNING: calibration is a time consuming task')
         
 
-        logger_hv.warning('WARNING: erasing current calibration values')
+        hv_logger.warning('WARNING: erasing current calibration values')
         
 
         self.writeCalibSlope(1)
@@ -265,30 +397,30 @@ class HV():
         Vexpect = [25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400]
         Vread = []
         
-        logger_hv.info('set fast rampup/rampdown rate (25 V/s)')
+        hv_logger.warning('set fast rampup/rampdown rate (25 V/s)')
         self.setRateRampup(25)
         self.setRateRampdown(25)
         
-        logger_hv.info('start calibration with status=DOWN Vset=10V')
+        hv_logger.warning('start calibration with status=DOWN Vset=10V')
         self.setVoltageSet(10)
         self.powerOff()
-        logger_hv.info(f'waiting for voltage < {Vexpect[0]}')
+        hv_logger.warning(f'waiting for voltage < {Vexpect[0]}')
         while(self.getVoltage() > Vexpect[0]):
             time.sleep(1)
         
-        logger_hv.info('turn on high voltage')
+        hv_logger.warning('turn on high voltage')
         self.powerOn()
         for v in Vexpect:
-            logger_hv.info(f"Vset = {v}V")
+            hv_logger.info(f"Vset = {v}V")
             self.setVoltageSet(v)
             time.sleep(1)
-            logger_hv.info('waiting for voltage level')
+            hv_logger.info('waiting for voltage level')
             while (True):
                 if (self.statusString(self.getStatus()) != 'UP'):
                     time.sleep(1)
                     continue
                 else:
-                    logger_hv.info(f'Vset = {v}V reached - collecting samples')
+                    hv_logger.info(f'Vset = {v}V reached - collecting samples')
                     # wait for voltage leveling
                     time.sleep(2)
                     Vtemp = []
@@ -301,12 +433,12 @@ class HV():
                     Vmeas = np.delete(Vmeas, 0)
                     Vmeas = np.delete(Vmeas, len(Vmeas)-1)
                     Vread.append(Vmeas.mean())
-                    logger_hv.info(f'{Vmeas}')
-                    logger_hv.info(f'mean = {Vmeas.mean()}')
+                    hv_logger.warning(f'{Vmeas}')
+                    hv_logger.warning(f'mean = {Vmeas.mean()}')
                     break
 
-        logger_hv.info(f'Vexpect => {Vexpect}')
-        logger_hv.info(f'Vread => {Vread}')
+        hv_logger.warning(f'Vexpect => {Vexpect}')
+        hv_logger.warning(f'Vread => {Vread}')
 
         x = np.array(Vread)
         y = np.array(Vexpect)
@@ -316,29 +448,55 @@ class HV():
         y = y[:, np.newaxis]
         # direct least square regression
         alpha = np.dot((np.dot(np.linalg.inv(np.dot(A.T,A)),A.T)),y)
-        logger_hv.info(f'slope = {alpha[0][0]} , offset = {alpha[1][0]}')
+        hv_logger.warning(f'slope = {alpha[0][0]} , offset = {alpha[1][0]}')
 
         # write calibration registers
 
         self.writeCalibSlope(float(alpha[0][0]))
         self.writeCalibOffset(float(alpha[1][0]))
-        logger_hv.info('OK')
+        hv_logger.warning('OK')
             
-        logger_hv.info('stop calibration with status=DOWN Vset=10V')
+        hv_logger.warning('stop calibration with status=DOWN Vset=10V')
         self.setVoltageSet(10)
         self.powerOff()
 
-        logger_hv.info('calibration DONE!')
+        hv_logger.warning('calibration DONE!')
+        return True
+    
+    def channelsCalib(self, channels):
+        list_channels = self.getChannels(channels)
+        for channel in list_channels:
+            hv_logger.warning(f'Calibrating channel {channel}')
+            if self.open(channel):
+                self.calibration()
+            else:
+                continue
+        
         return True
     
 
+    def getChannels(self, channels):
+        if channels == "all":
+            channel_list = range(1, 8)
+            return channel_list
+        else:
+            if isinstance(channels, list):
+                channel_list = channels
+                return channel_list
+            else:
+                try:
+                    channel_list = [int(x) for x in channels.split(",")]
+                    return channel_list
+                except ValueError:
+                    return []
+    
 
-    def configure_channel(self, channel, port, voltage_set=None, threshold_set=None, limit_trip_time=None, limit_voltage=None, limit_current=None, limit_temperature=None, rate_up=None, rate_down=None):
+    def configureChannel(self, channel,
+                        voltage_set=None, threshold_set=None, limit_trip_time=None, limit_voltage=None, limit_current=None, limit_temperature=None, 
+                        rate_up=None, rate_down=None):
 
-        """Function to configure the signle channels with the given parameters"""
-
-        if not self.open(port, channel):
-            print(f"It was not possible to open channel: {channel}")
+        if not self.open(channel):
+            hv_logger.warning(f"It was not possible to open channel: {channel}")
             return False
         
         time.sleep(0.2)
@@ -371,45 +529,20 @@ class HV():
         while True:
             if self.statusString(self.getStatus()) == "DOWN":
                 break
-            else:
-                if self.statusString(self.getStatus()) == "UP":
-                    break
+            elif self.statusString(self.getStatus()) == "UP":
+                break
 
             time.sleep(2)
 
 
         return True
-        
-    
-
-    def get_channels(self, channels):
-        """Function to get which channels """
-
-        if channels == "all":
-            channel_list = range(1, 8)
-            return channel_list
-        else:
-            if isinstance(channels, list):
-                channel_list = channels
-                return channel_list
-            else:
-                try:
-                    channel_list = [int(x) for x in channels.split(",")]
-                    return channel_list
-                except ValueError:
-                    return []
 
 
-
-
-    def process_channels(self, channels, port,**kwargs):
-
-        """Process a list of channels or all of them"""
-
+    def processChannels(self, channels, **kwargs):
         valid_channels = []
         not_valid_channels = []
 
-        channel_list = self.get_channels(channels)
+        channel_list = self.getChannels(channels)
 
         if channel_list == []:
             return [],[]
@@ -417,22 +550,22 @@ class HV():
         
         for channel in channel_list:
 
-            logger_hv.info(f'Configuring channel: {channel}')
+            hv_logger.warning(f'Configuring channel: {channel}')
 
             time.sleep(0.1)
             if not self.checkAddressBoundary(channel):
-                logger_hv.info(f"Channel {channel} is out of range. Ignored.")
+                hv_logger.warning(f"Channel {channel} is out of range. Ignored.")
                 not_valid_channels.append(channel)
                 continue
             
             time.sleep(0.1)
-            if not self.check_address(port, channel):
-                logger_hv.info("Channel and address selected don't match.")
+            if not self.checkAddress(channel):
+                hv_logger.warning("Channel and address selected don't match.")
                 not_valid_channels.append(channel)
                 continue
             
             time.sleep(0.1)
-            if self.configure_channel(channel, port, **kwargs):
+            if self.configureChannel(channel, **kwargs):
                 valid_channels.append(channel)
                 time.sleep(0.2)
                 
@@ -441,16 +574,14 @@ class HV():
                 time.sleep(0.2)
 
         return valid_channels, not_valid_channels
-    
-    
-    
 
-    def set_hv_init_configuration(self, port, channels, voltage_set, threshold_set, limit_trip_time, limit_voltage, limit_current, limit_temperature, rate_up, rate_down):
+    def setInitConfiguration(self, channels, 
+                            voltage_set, threshold_set, limit_trip_time, limit_voltage, limit_current, limit_temperature,
+                            rate_up, rate_down):
 
-        """Function to set an initial configuration to the HV board."""
 
-        return self.process_channels(
-            channels, port,
+        return self.processChannels(
+            channels,
             voltage_set=voltage_set,
             threshold_set=threshold_set,
             limit_trip_time=limit_trip_time,
@@ -460,96 +591,77 @@ class HV():
             rate_up=rate_up,
             rate_down=rate_down
         )
+    
+    
 
-    def set_voltage(self, channels, voltage_set, port):
-
-        """Function to set only the voltage set to a single or multiple channels"""
-
-        return self.process_channels(channels, port, voltage_set=voltage_set)
+    def set_voltage(self, channels, voltage_set):
+        return self.processChannels(channels, voltage_set=voltage_set)
     
 
     
-    def set_threshold(self, channels, threshold_set, port):
-
-        """Function to set only the voltage set to a single or multiple channels"""
-
-        return self.process_channels(channels, port, threshold_set=threshold_set)
+    def set_threshold(self, channels, threshold_set):
+        return self.processChannels(channels, threshold_set=threshold_set)
     
 
 
     
-    def set_limitI(self, channels, limit_current, port):
-
-        """Function to set only the voltage set to a single or multiple channels"""
-
-        return self.process_channels(channels, port, limit_current=limit_current)
+    def set_limitI(self, channels, limit_current):
+        return self.processChannels(channels, limit_current=limit_current)
     
 
     
-    def set_limitV(self, channels, limit_voltage, port):
-
-        """Function to set only the voltage set to a single or multiple channels"""
-
-        return self.process_channels(channels, port, limit_voltage=limit_voltage)
+    def set_limitV(self, channels, limit_voltage):
+        return self.processChannels(channels, limit_voltage=limit_voltage)
     
 
     
-    def set_limitTrip(self, channels, limit_trip_time, port):
-
-        """Function to set only the voltage set to a single or multiple channels"""
-
-        return self.process_channels(channels, port, limit_trip_time=limit_trip_time)
-    
+    def set_limitTrip(self, channels, limit_trip_time):
+        return self.processChannels(channels, limit_trip_time=limit_trip_time)
     
 
-    def power_on(self, channels, port):
-
-
-        list_channels = self.get_channels(channels)
-
+    def power_on(self, channels):
+        list_channels = self.getChannels(channels)
         powered_channels = []
 
         for channel in list_channels:
-            logger_hv.info(f"Powering on channel {channel}")
-            if self.open(port, channel):
+            hv_logger.warning(f"Powering on channel {channel}")
+            if self.open(channel):
                 self.powerOn()
                 powered_channels.append(channel)
             else:
-                logger_hv.warning(f"Impossible to open/power on channel: {channel}")
+                hv_logger.error(f"Impossible to open/power on channel: {channel}")
                 continue
 
 
 
         if not powered_channels:
-            logger_hv.warning("No channels were successfully opened.")
+            hv_logger.error("No channels were successfully opened.")
             return False
 
-        logger_hv.info(f"Started powering on {len(powered_channels)} channels. Checking status...")
+        hv_logger.warning(f"Started powering on {len(powered_channels)} channels. Checking status...")
 
 
         
         while powered_channels:
-
-
             channels_to_remove = []
 
             for channel in powered_channels:
-                if not self.open(port, channel):
-                    logger_hv.warning(f"Channel {channel} cannot be opened anymore.")
+                if not self.open(channel):
+                    hv_logger.error(f"Channel {channel} cannot be opened anymore.")
                     channels_to_remove.append(channel)
                     continue
 
 
                 alarm = self.alarmString(self.getAlarm())
                 if alarm != "none":
-                    logger_hv.warning(f"Alarm powering on channel {channel}: {alarm}")
+                    hv_logger.warning(f"Alarm powering on channel {channel}: {alarm}")
                     channels_to_remove.append(channel)
                     continue
 
 
                 status = self.statusString(self.getStatus())
                 if status == "UP":
-                    logger_hv.info(f"Channel {channel} is now UP.")
+                    hv_logger.info(f"Channel {channel} is now UP.")
                     channels_to_remove.append(channel)
                 else:
                     pass
@@ -560,77 +672,59 @@ class HV():
 
             if powered_channels:
                 time.sleep(2)
-                
-
+            
 
         if powered_channels:
-            logger_hv.warning(f"Some channels never reached UP state: {powered_channels}")
+            hv_logger.error(f"Some channels never reached UP state: {powered_channels}")
             return False
         else:
-            logger_hv.info("All channels are either UP or had an alarm.")
+            hv_logger.warning("All channels are either UP or had an alarm.")
             return True
-    
-
-    def channels_calib(self, channels, port):
-        list_channels = self.get_channels(channels)
-        for channel in list_channels:
-            logger_hv.info(f'Calibrating channel {channel}')
-            if self.open(port, channel):
-                self.calibration()
-            else:
-                continue
         
-        return True
-
-
-    def power_off(self, channels, port):
-
-
-        list_channels = self.get_channels(channels)
-
+    
+    def power_off(self, channels):
+        list_channels = self.getChannels(channels)
         powered_channels = []
 
         for channel in list_channels:
-            logger_hv.info(f"Powering off channel {channel}")
-            if self.open(port, channel):
+            hv_logger.warning(f"Powering off channel {channel}")
+            if self.open(channel):
                 self.powerOff()
                 powered_channels.append(channel)
             else:
-                logger_hv.warning(f"Impossible to open/power off channel: {channel}")
+                hv_logger.error(f"Impossible to open/power off channel: {channel}")
                 continue
 
 
 
         if not powered_channels:
-            logger_hv.warning("No channels were successfully opened.")
+            hv_logger.error("No channels were successfully opened.")
             return False
 
-        logger_hv.info(f"Started powering off {len(powered_channels)} channels. Checking status...")
+        hv_logger.warning(f"Started powering off {len(powered_channels)} channels. Checking status...")
 
 
         
         while powered_channels:
-
-
             channels_to_remove = []
 
             for channel in powered_channels:
-                if not self.open(port, channel):
-                    logger_hv.warning(f"Channel {channel} cannot be opened anymore.")
+                if not self.open(channel):
+                    hv_logger.warning(f"Channel {channel} cannot be opened anymore.")
                     channels_to_remove.append(channel)
                     continue
 
 
                 alarm = self.alarmString(self.getAlarm())
                 if alarm != "none":
-                    logger_hv.warning(f"Alarm powering off channel {channel}: {alarm}")
+                    hv_logger.warning(f"Alarm powering off channel {channel}: {alarm}")
                     channels_to_remove.append(channel)
                     continue
 
 
                 status = self.statusString(self.getStatus())
                 if status == "DOWN":
-                    logger_hv.info(f"Channel {channel} is now DOWN.")
+                    hv_logger.warning(f"Channel {channel} is now DOWN.")
                     channels_to_remove.append(channel)
                 else:
                     pass
@@ -645,83 +739,79 @@ class HV():
 
 
         if powered_channels:
-            logger_hv.warning(f"Some channels never reached DOWN state: {powered_channels}")
+            hv_logger.error(f"Some channels never reached DOWN state: {powered_channels}")
             return False
         else:
-            logger_hv.info("All channels are either DOWN or had an alarm.")
+            hv_logger.warning("All channels are either DOWN or had an alarm.")
             return True
+        
     
 
-    def read_volt(self, channels, port):
-        """Function to monitor the voltages of the FEBs for different channels."""
-
-        if isinstance(channels, list):
-            hv_list = channels
-        else:
-            try:
-                hv_list = [int(x) for x in channels.split(",")]
-            except ValueError:
-                print('E: failed to parse channels - should be a comma-separated list of integers')
-                return None
+    def readVolt(self, channels):
+        hv_list = self.getChannels(channels)
 
         hv_value = {}
         timestamp = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
 
         hv_value["type"] = "data"
         hv_value["data_type"] = "hv_data"
-        baseAddress = 0x0000
-        regs = self.dev.read_registers(baseAddress, 48)
         for hv in hv_list:
-            if self.open(port, hv):
+            if self.open(hv):
                 hv_value[hv] = {
                     'time': timestamp,
                     'V': self.getVoltage(),
                     'I': self.getCurrent(),
-                    'T' : self.convert_temp(self.getTemperature())
+                    'T' : self.convertTemperature(self.getTemperature())
                 }
             time.sleep(1)
 
                 
 
         return hv_value
-    
 
-    def get_serial(self, channels, port):
-        """Function to get the serial numbers associated with the FEBs"""
+    def setPMTSerialNumber(self, sn, slave=None):
+        slave = self.addr if slave == None else slave
+        data = list(bytes(sn.ljust(12), 'utf-8'))
+        self._safe_write(address=0x08, values=data, slave=slave, desc = "pmt serial write")
+    
+    
+    def setAllPMTSerial(self, channels, serials, slave=None):
+        slave = self.addr if slave == None else slave
+        list_channels = self.getChannels(channels)
+        for channel in list_channels:
+            hv_logger.info(f'Setting serial number for channel {channel}')
+            if self.open(channel):
+                self.setPMTSerialNumber(serials[channel])
+            else:
+                continue
+        return True
+    
+    
+    def getSerial(self, channels):
         info = {}
-        hv_list = self.get_channels(channels)
-        logger_hv.info(f"Canali ottenuti: {list(hv_list)}")
+        hv_list = self.getChannels(channels)
+        hv_logger.warning(f"Canali ottenuti: {list(hv_list)}")
         for hv in hv_list:
-            if self.open(port, hv):
+            if self.open(hv):
                 try:
-                    device_id = self.dev.read_registers(0x004, 2)
-                    pmt_serial = self.dev.read_string(0x0008, 6)
-                    feb_serial = self.dev.read_string(0x0014, 6)
-                    hv_serial = self.dev.read_string(0x000E, 6)
-                    info[hv] = [device_id, pmt_serial, feb_serial, hv_serial]
-                    logger_hv.info(f"Channel {hv}: Device ID {device_id}, PMT Serial {pmt_serial}, FEB_serial {feb_serial}, HV Serial {hv_serial}")
+                    a = self.getInfo(hv)
+                    info[hv] = [a[-1], a[1], a[3], a[2]]
+                    hv_logger.info(f"Channel {hv}: Device ID {a[-1]}, PMT Serial {a[1]}, FEB_serial {a[3]}, HV Serial {a[2]}")
                 except Exception as e:
-                    logger_hv.error(f"Error reading serial for channel {hv}: {e}")
+                    hv_logger.error(f"Error reading serial for channel {hv}: {e}")
                 time.sleep(1)
             else:
-                logger_hv.warning(f"Channel {hv} non aperto correttamente.")
+                hv_logger.warning(f"Channel {hv} non aperto correttamente.")
         return info
 
-
-
-
-            
+    
+    
+    
         
 
-    
 
 
 
-
-    
-
-
-
-
-            
-        
+    def close(self):
+        if self.client:
+            self.client.close()

@@ -2,7 +2,6 @@ import logging
 import subprocess
 import datetime
 import os
-import time
 from pathlib import Path
 
 #########################################
@@ -39,9 +38,7 @@ folder_acq = {
 class DataProcess:
 
     def __init__(self):
-        self.server = None
         self.opened_files = []
-        logger.debug("DataProcess initialized with port %s", self.port)
 
     @staticmethod
     def generate_timestamp():
@@ -65,18 +62,11 @@ class DataProcess:
             fname = f"{base}_{i}{ext}"
             i += 1
         return fname
-
-
-
-    def string_no_space(self, string):
-        return string.replace(" ", "")
     
     def get_folder_path(self, flag_acq = "", run_id = None, number = None):
-
-
         base_path = Path("/swgo") if Path("/swgo").exists() else Path.home()
 
-        base_folder = base_path / "multiPMT" / "calibration" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
+        base_folder = base_path / "multiPMT" / "acquisition" / f"batch_{number}" / folder_acq.get(flag_acq, "unknown") / DataProcess.generate_timestamp_folder()
 
         if run_id is not None:
             run_folder = base_folder / f"run_{run_id}"
@@ -90,30 +80,51 @@ class DataProcess:
         run_folder.mkdir(parents=True, exist_ok=True)
         return run_folder
 
+    
+    def compile_flush(self, force_compile=False):
+        build_dir = Path(__file__).parent / "../evreceiver"
+        flush_exe = build_dir / "flush_fifo"
+        if not flush_exe.exists() or force_compile:
+            logger.warning("Compiling flush_fifo executable...")
+            compile_cmd = ["gcc", str(build_dir / "flush_fifo.c"), "-o", str(flush_exe), "-lzmq"]
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Compilation failed:\n{result.stderr}")
+            logger.warning("Compilation completed successfully.")
+        return flush_exe
 
-    def run(self, duration=None, suffix="", flag_acq = "", run_id = None, number = None): 
+    def compile_evreceiver(self, force_compile=False):
+        build_dir = Path(__file__).parent / "../evreceiver"
+        evr_exe = build_dir / "evreceiver"
+        if not evr_exe.exists() or force_compile:
+            logger.warning("Compiling evreceiver executable...")
+            compile_cmd = ["gcc", str(build_dir / "evreceiver.c"), "-o", str(evr_exe), "-lzmq"]
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Compilation failed:\n{result.stderr}")
+            logger.warning("Compilation completed successfully.")
+        return evr_exe
+            
+    def run(self, duration=None, suffix="", flag_acq = "", run_id = None, number = None, force_compile=False): 
 
-        
-        
+        flush_exe = self.compile_flush(force_compile=force_compile)
+        logger.info("Running flush_fifo to clear FIFO...")
+        flush_process = subprocess.run([str(flush_exe), "30"], capture_output=True, text=True)
+        if flush_process.returncode != 0:
+            logger.error(f"flush_fifo failed:\n{flush_process.stderr}")
+
         run_folder = self.get_folder_path(flag_acq=flag_acq, run_id=run_id, number=number)
-
         filename = self.check_file_exists(DataProcess.get_file_name(suffix))
         filepath = run_folder / filename
-        filepath = Path(filepath).expanduser()
 
-        process = subprocess.Popen(["./evreceiver", str(filepath)])
+        evr_exe = self.compile_evreceiver(force_compile=force_compile)
+        logger.info("Running evreceiver")
+
         
+        main_process = subprocess.Popen([str(evr_exe), str(filepath), str(duration or -1)])
+        return main_process
+
         
-        try:
-            if duration:
-                time.sleep(duration)
-                process.terminate()
-                process.wait(timeout=5)
-            else:
-                process.wait()
-        except Exception as e:
-            logger.error(f"Error managing parser process: {e}")
-            process.kill()
 
 
 
