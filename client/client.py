@@ -8,7 +8,7 @@ import subprocess
 from rc_client import RC
 from hv_client import HV
 from mon_conf import MON
-import prog_FEB
+import progFEB
 import argparse
 from types import SimpleNamespace
 import socket

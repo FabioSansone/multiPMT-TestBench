@@ -2,12 +2,11 @@ import subprocess
 import sys
 import time
 import logging
+from types import SimpleNamespace
 
 from rc_client import RC
 from hv_client import HV
 
-rc = RC()
-hv = HV()
 
 feb_logger = logging.getLogger("Client")
 
@@ -42,7 +41,7 @@ def boot(baud, firmware, port):
         return False
 
 
-def changeAddress(index):
+def changeAddress(index, rc, hv):
     """
     Set a new address for the FEB
     """
@@ -88,7 +87,7 @@ def changeAddress(index):
 
 
 
-def main(channels, baud, firmware, port):
+def main(channels, baud, firmware, port, rc, hv):
     """
     Main function to program FEBs
     """
@@ -127,7 +126,7 @@ def main(channels, baud, firmware, port):
         time.sleep(1)
         
         channel_index = channel - 1
-        if not changeAddress(channel_index):
+        if not changeAddress(channel_index, rc, hv):
             feb_logger.error(f"Address change failed for channel {channel}")
             continue
         
@@ -149,11 +148,21 @@ def main(channels, baud, firmware, port):
 
 
 if __name__ == "__main__":
+
+    
+    
     # Configurazione di esempio
     channels = "all"  # o "1,2,3" o [1,2,3]
     baud = 115200
     firmware = "HKL031V4B.hex" 
     port = "/dev/ttyPS1"
+
+    params = SimpleNamespace(mode = 'rtu',
+                            host = 'localhost',
+                            port = port)
     
-    result = main(channels, baud, firmware, port)
+    rc1 = RC()
+    hv1 = HV(params=params)
+    
+    result = main(channels, baud, firmware, port, rc1, hv1)
     sys.exit(0 if result else 1)
