@@ -59,7 +59,7 @@ def changeAddress(index, rc, hv):
         
         
         hv.ResetConnection()
-        time.sleep(0.5)
+        time.sleep(1)
         
         
         feb_old_addr = hv.getStandardFebAddr()
@@ -93,7 +93,7 @@ def changeAddress(index, rc, hv):
         
         
         hv.ResetConnection()
-        time.sleep(0.5)
+        time.sleep(1)
         
         
         if hv.checkAddress(new_address):
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     
     
     # Configurazione di esempio
-    channels = "2"  # o "1,2,3" o [1,2,3]
+    channels = "all"  # o "1,2,3" o [1,2,3]
     baud = 115200
     firmware = "HKL031V4B.hex" 
     port = "/dev/ttyPS1"
