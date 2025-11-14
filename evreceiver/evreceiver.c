@@ -8,9 +8,10 @@
 #include <unistd.h> 
 #include <stdlib.h>
 #include <stdint.h>
+#include "runcontrol_acq.h"
 
 
-
+volatile uint32_t *rc_map = open_rc();
 
 
 #define EVENT_SIZE_WORDS 8  //8 parole da 16 bit => dimensione della parola dal DMA
@@ -108,6 +109,8 @@ void *run_control(void *args){
 
     sleep(1);
 
+    rc_write(rc_map, 19, 127);
+
     zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE);
     zmq_send(rc_socket, "start", 5, 0);
     printf("Sent START message (topic: control)\n");
@@ -116,6 +119,27 @@ void *run_control(void *args){
         sleep(1);
     }
 
+    rc_write(rc_map, 19, 0);
+    int read_15 = rc_read(rc_map, 15);
+    rc_write(rc_map, 15, 32+read_15);
+
+    int check_reg15 = rc_read(rc_map, 15);
+    int check_flush = (check_reg15 >> 6) & 1;
+
+    if (check_flush == 1){
+        rc_write(rc_map, 15, read_15);
+        zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
+        zmq_send(rc_socket, "stop", 4, 0);
+        printf("Sent STOP message\n");
+
+        zmq_close(rc_socket);
+        zmq_ctx_destroy(context_rc);
+        return NULL;
+
+    }
+
+    printf("It was not possible to make the flush of the last data. Check for problems...");
+    rc_write(rc_map, 15, read_15);
     zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
     zmq_send(rc_socket, "stop", 4, 0);
     printf("Sent STOP message\n");
@@ -123,6 +147,10 @@ void *run_control(void *args){
     zmq_close(rc_socket);
     zmq_ctx_destroy(context_rc);
     return NULL;
+    
+
+
+
 }
 
 

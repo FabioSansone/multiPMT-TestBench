@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include "runcontrol_acq.h"
 
 #define UIO_DEVICE "/dev/uio0"
 #define UIO_MAP_SIZE  0x10000
@@ -68,21 +69,6 @@ void close_rc(){
     }
 }
 
-
-
-int main() {
-
-    volatile uint32_t *map = open_rc();
-    if (!map) {
-        return 1;
-    }
-
-    uint32_t val = rc_read(map, 2);
-    printf("Read: 0x%08X\n", val);
-
-    close_rc();
-    return 0;
-}
 
 
 
