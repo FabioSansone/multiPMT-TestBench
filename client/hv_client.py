@@ -138,7 +138,7 @@ class HV:
 
     def getStatus(self, slave=None):
         slave = self.addr if slave is None else slave
-        rr = self._safe_read(address=6, count=1, slave=slave, desc="status")
+        rr = self._safe_read(addr=6, count=1, slave=slave, desc="status")
         return rr[0]
 
             
@@ -772,7 +772,7 @@ class HV:
     def setPMTSerialNumber(self, sn, slave=None):
         slave = self.addr if slave == None else slave
         data = list(bytes(sn.ljust(12), 'utf-8'))
-        self._safe_write(address=0x08, values=data, slave=slave, desc = "pmt serial write")
+        self._safe_write(addr=0x08, values=data, slave=slave, desc = "pmt serial write")
     
     
     def setAllPMTSerial(self, channels, serials, slave=None):

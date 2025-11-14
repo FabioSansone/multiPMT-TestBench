@@ -141,7 +141,7 @@ class Client:
                         time.sleep(0.1)
                         self.rc.write(16, 0)
                         time.sleep(0.1)
-                        exec_command = ["/root/client/evproducer.sh", self.server_ip]
+                        exec_command = ["./evproducer.sh", self.server_ip]
                         logger.info(f"Executing evproducer with: {exec_command}")
                         try:
                             process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

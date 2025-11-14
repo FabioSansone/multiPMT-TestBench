@@ -81,24 +81,13 @@ class DataProcess:
         return run_folder
 
     
-    def compile_flush(self, force_compile=False):
-        build_dir = Path(__file__).parent / "../evreceiver"
-        flush_exe = build_dir / "flush_fifo"
-        if not flush_exe.exists() or force_compile:
-            logger.warning("Compiling flush_fifo executable...")
-            compile_cmd = ["gcc", str(build_dir / "flush_fifo.c"), "-o", str(flush_exe), "-lzmq"]
-            result = subprocess.run(compile_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"Compilation failed:\n{result.stderr}")
-            logger.warning("Compilation completed successfully.")
-        return flush_exe
 
     def compile_evreceiver(self, force_compile=False):
         build_dir = Path(__file__).parent / "../evreceiver"
         evr_exe = build_dir / "evreceiver"
         if not evr_exe.exists() or force_compile:
             logger.warning("Compiling evreceiver executable...")
-            compile_cmd = ["gcc", str(build_dir / "evreceiver.c"), "-o", str(evr_exe), "-lzmq"]
+            compile_cmd = ["gcc", str(build_dir / "evreceiver.c"), "-o", str(evr_exe), "-lzmq", "-lpthread", "-O2"]
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Compilation failed:\n{result.stderr}")
@@ -107,12 +96,11 @@ class DataProcess:
             
     def run(self, duration=None, suffix="", flag_acq = "", run_id = None, number = None, force_compile=False): 
 
-        flush_exe = self.compile_flush(force_compile=force_compile)
-        logger.info("Running flush_fifo to clear FIFO...")
-        flush_process = subprocess.run([str(flush_exe), "30"], capture_output=True, text=True)
-        if flush_process.returncode != 0:
-            logger.error(f"flush_fifo failed:\n{flush_process.stderr}")
 
+        #flush_process = subprocess.run([str(flush_exe), "30"], capture_output=True, text=True)
+        #if flush_process.returncode != 0:
+        #    logger.error(f"flush_fifo failed:\n{flush_process.stderr}")
+        logger.info("Starting acquisition...")
         run_folder = self.get_folder_path(flag_acq=flag_acq, run_id=run_id, number=number)
         filename = self.check_file_exists(DataProcess.get_file_name(suffix))
         filepath = run_folder / filename
@@ -126,6 +114,11 @@ class DataProcess:
 
         
 
+if __name__ == "__main__":
+
+    evrecv = DataProcess()
+
+    evrecv.run(60, "test", "test", "test", force_compile=True)
 
 
     
