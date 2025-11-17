@@ -9,7 +9,6 @@ import time
 import threading
 import HardwareResources
 from InstrumentManager import InstrumentsManager
-from data_processing import DataProcess
 import MonitoringProcessing
 import socket
 from pathlib import Path
@@ -303,14 +302,8 @@ class Server(cmd2.Cmd):
     ###############################
 
     def _acquire_charge(self, suffix, flag_acq, run_id = None, timer=60):   
-        charge = DataProcess()
-        HardwareResources.DMACommunication(socket=self.server, clients=self.clients_connected, charge=charge, suffix=suffix, flag_acquisition=flag_acq, 
+        HardwareResources.DMACommunication(socket=self.server, clients=self.clients_connected, suffix=suffix, flag_acquisition=flag_acq, 
                                             run_id=run_id, timer=timer, batch=self.batch, output_func=self.poutput)
-    
-    def _check_signal(self):
-        charge = DataProcess()
-        check = HardwareResources.SignalIntegrity(socket=self.server, clients=self.clients_connected, charge=charge, output_func=self.poutput)
-        return check
 
     def _acquire_rate(self, registers, flag_acq, suffix, run_id):
         HardwareResources.RCMonitoring(socket=self.server, clients=self.clients_connected, registers=registers, batch=self.batch, flag_acq=flag_acq, suffix=suffix, run_id = run_id, output_func=self.poutput)

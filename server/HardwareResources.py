@@ -3,11 +3,31 @@ import json
 import zmq
 from pathlib import Path
 from typing import List, Callable, Union
-import data_processing
 import time
 import MonitoringProcessing
+import datetime
+import os
+import subprocess
+import ctypes
 
 logger = logging.getLogger("Server")
+
+###################
+#FOLDER ACQUISITIO#
+###################
+
+FOLDER_ACQ = {
+    "polarizer" : "polarizer_calibration/",
+    "pedestal" : "pedestal_characterisation/",
+    "spe" : "single_photoelectron/",
+    "gain" : "gain_curve/",
+    "wheels_char" : "wheels_characterisation/",
+    "fiber_char" : "fiber_characterisation/",
+    "threshold": "threshold_calibration/",
+    "threshold_dark": "threshold_calibration_dark/",
+    "threshold_scan": "threshold_scan/",
+    "spe_equal": "spe_equal_gains/"
+}
 
 #####################################
 #RUN CONTROL COMMUNICATION FUNCTIONS#
@@ -44,6 +64,47 @@ def RCWrite(socket:zmq.Socket, clients: List[bytes], addr : int, value: int, out
             response = json.loads(write[1].decode("utf-8"))
             if write[0] == client and response.get("response") == "rc_write":
                 output_func(response.get("result"))
+        except Exception as e:
+            output_func(f"Problem occured writing RC registers: {e}")
+        except json.JSONDecodeError:
+            output_func("Failed to decode the RC response.")
+
+
+def RCRead(socket:zmq.Socket, clients: List[bytes], addr : int, output_func: Callable[[str], None]) -> None:
+    """
+    Sends an RC read command to connected clients.
+
+    Parameters:
+        socket (zmq.Socket): The ZMQ socket used to send the command.
+        clients (List[bytes]): The list of connected client IDs.
+        addr (int): The address to read.
+        output_func (Callable[[str], None]): Function to output messages (e.g., poutput).
+
+    Behavior:
+        For each connected client, the function sends a JSON-encoded RC read command.
+        It then waits for a response and, if the response indicates a successful RC red,
+        outputs the result using the provided output function.
+    """
+    command_rc_read = {
+            "type": "rc_command",
+            "command": "read_address",
+            "address": addr,
+        }
+    logger.info(f"Sending RC command to client: {command_rc_read}")
+
+    for client in clients:
+        socket.send_multipart([client, json.dumps(command_rc_read).encode("utf-8")])
+        try:
+            read = socket.recv_multipart()
+            response = json.loads(read[1].decode("utf-8"))
+            if read[0] == client and response.get("response") == "rc_read":
+                value = response.get("result")
+                if value:
+                    output_func(f"It was possible to read the register {addr} with value ",value)
+                    return value
+                else:
+                    output_func("It was not possible to read the selected register")
+                    return value
         except Exception as e:
             output_func(f"Problem occured writing RC registers: {e}")
         except json.JSONDecodeError:
@@ -410,84 +471,142 @@ def HVProgFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union
 #DMA COMMUNICATION FUNCTIONS#
 ######################################
 
+def GenerateTimestamp():
+    return datetime.datetime.now().strftime('%Y_%m_%d_%H_%M')
 
-def DMACommunication(socket:zmq.Socket, clients: List[bytes], charge:data_processing.DataProcess, suffix:str, flag_acquisition:str, run_id:Union[str, None], 
+def GenerateTimestampFolder():
+    return datetime.datetime.now().strftime('%Y_%m_%d')
+
+def GetFileName(suffix):
+    timestamp = GenerateTimestamp()
+    file_prefix = "daq"
+    return f"{file_prefix}_{timestamp}_{suffix}.csv"
+
+def CheckFileExist(fname):
+        base, ext = os.path.splitext(fname)
+        i = 1
+        while os.path.exists(fname):
+            fname = f"{base}_{i}{ext}"
+            i += 1
+        return fname
+
+def GetFolderPath(flag_acq = "", run_id = None, number = None):
+        base_path = Path("/swgo") if Path("/swgo").exists() else Path.home()
+        base_folder = base_path / "multiPMT" / "acquisition" / f"batch_{number}" / FOLDER_ACQ.get(flag_acq, "unknown") / GenerateTimestampFolder()
+
+        if run_id is not None:
+            run_folder = base_folder / f"run_{run_id}"
+        else:
+            i = 1
+            run_folder = base_folder / f"acq_{i}"
+            while run_folder.exists():
+                i += 1
+                run_folder = base_folder / f"acq_{i}"
+
+        run_folder.mkdir(parents=True, exist_ok=True)
+        return run_folder
+
+
+def CompileCLibrary(force_compile=False):
+    build_dir = Path(__file__).parent / "../evreceiver"   # where is the .c
+    source_file = build_dir / "evreceiver.c"            # C source
+    output_lib = build_dir / "evreceiver.so"         # output for ctypes
+
+    if not output_lib.exists() or force_compile:
+        logger.warning("Compiling C shared library for ctypes...")
+
+        compile_cmd = [
+            "gcc",
+            "-shared",
+            "-fPIC",
+            "-O2",
+            str(source_file),
+            "-o",
+            str(output_lib),
+
+            "-lzmq",
+            "-lpthread"
+        ]
+
+        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Compilation failed:\n{result.stderr}")
+
+        logger.warning("Compilation completed successfully.")
+
+    return output_lib
+
+
+def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_acquisition:str, run_id:Union[str, None], 
                      timer:int, batch:int, output_func: Callable[[str], None]) -> None:
     
     if timer is not None and timer < 10:
         logger.critical("Select a timer value greater than 10 seconds")
         return
     if timer is None:
-        self.poutput("Timer has not been set. Choose a proper value for the acquisition.")
+        self.poutput("Acquisition will run forever. To stop press Ctrl-C")
         return
+    
+    ###Creating the folder###
+    run_folder = GetFolderPath(flag_acq=flag_acquisition, run_id=run_id, number=batch)
+    filename = CheckFileExist(GetFileName(suffix))
+    filepath = run_folder / filename
+    
+    ###Compiling evreceiver###
+    lib_path = CompileCLibrary(force_compile=False)
+    c_lib = ctypes.CDLL(str(lib_path))
 
+    ###Enabling the channels###
     RCWrite(socket=socket, clients=clients, addr=19, value=127, output_func=output_func)  
-
     time.sleep(0.1)
-    output_func("Waiting time to settle evproducer")
-    time.sleep(2) #Waiting time to settle evproducer
 
-    ######################
-    output_func("Removing old data in the FIFO (30 seconds wait)")
-    try: 
-        charge.flush_fifo(duration=30)
-    except Exception as e:
-        output_func(f"Some problems occured empting the FIFO:{e}")
-
-    output_func("Emptied FIFO. Waiting 3 seconds to start the acquisition")
-    time.sleep(3)
-    ######################
-
-    output_func(f"Acquisition started. Waiting for {timer} seconds.")
-    try: 
-        charge.run(duration=timer, suffix=suffix, flag_acq=flag_acquisition, run_id=run_id, number = batch)
-    except Exception as e:
-        output_func(f"Some problems occured starting or managing the acquisition:{e}")
-
-    output_func("Acquisition time has expired")
-
-    time.sleep(0.1)
+    ###Starting the Evproducer###
+    c_lib.start_control.argtypes = []
+    c_lib.start_control.restype = ctypes.c_int
+    result_start = c_lib.start_control()
+    if (result_start != 0):
+        output_func("Problem in starting Evproducer. Check the log for more information")
+        return 
+    
+    ###Starting the acquisition###
+    c_lib.run.argtypes = [ctypes.c_int, ctypes.c_char_p]
+    c_lib.run.restype = ctypes.c_int
+    result_run = c_lib.run(timer, filepath.encode('utf-8'))
+    if (result_run == 1):
+        output_func("Acquisition time elapsed. Flushing last data...")
+    elif(result_run == 0):
+        output_func("Acquisition stopped by user. Flushing last data...")
+    else:    
+        output_func("An error occured durign the acquisition. Please check")
+        return
+    
+    ###Disabling the channels###
     RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
     time.sleep(0.1)
 
-def SignalIntegrity(socket:zmq.Socket, clients: List[bytes], charge:data_processing.DataProcess,
-                    output_func: Callable[[str], None]) -> None:
+    ###Flushing last data###
+    read_prev_15 = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+    time.sleep(0.1)
+    if read_prev_15:
+        RCWrite(socket=socket, clients=clients, addr=15, value=read_prev_15+32, output_func=output_func)
+        time.sleep(0.1)
+        read_now_15 = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+        time.sleep(0.1)
+        if (read_now_15-read_prev_15-32 == 64):
+            output_func("Data flushing ended successfully")
+            RCWrite(socket=socket, clients=clients, addr=15, value=read_prev_15, output_func=output_func)
+            time.sleep(0.1)
+        else:
+            output_func("Problems occured durign the flushing of the last data. Please check")
+            return
     
-    output_func("Cheching Signal Integrity...")
-    RCWrite(socket=socket, clients=clients, addr=19, value=127, output_func=output_func)
-
-    time.sleep(0.1)
-    output_func("Waiting time to settle evproducer")
-    time.sleep(2) #Waiting time to settle evproducer
-
-    ######################
-    output_func("Removing old data in the FIFO (30 seconds wait)")
-    try: 
-        charge.flush_fifo(duration=30)
-    except Exception as e:
-        output_func(f"Some problems occured empting the FIFO:{e}")
-
-    output_func("Emptied FIFO. Waiting 3 seconds to check the signal integrity")
-    time.sleep(3)
-    ######################
-
-    ######################
-    try: 
-        signal_status = charge.signal_integrity(duration=60)
-        if not signal_status:
-            output_func("Check the signal on the oscilloscope. Something is probably wrong")
-            return False
-    except Exception as e:
-        output_func(f"Some problems occured checking signal integrity:{e}")
-        return False
-
-    output_func("Checked signal intgrety. Waiting 1 seconds to settle everything")
-    time.sleep(1)
-    ######################
-
-    RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)
-    time.sleep(0.1)
-    return True
+    ###Stopping evproducer###
+    c_lib.stop_control.argtypes = []
+    c_lib.stop_control.restype = ctypes.c_int
+    result_stop = c_lib.stop_control()
+    if (result_stop != 0):
+        output_func("Problem in stopping Evproducer. Check the log for more information")
+        return 
 
 
 ######################################

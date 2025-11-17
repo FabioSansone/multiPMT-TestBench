@@ -211,7 +211,7 @@ class Client:
                         if command == "write_address":
                             value = server_command.get("value")
                             addr = server_command.get("address")
-                            if self.rc.write(server_command.get("address"), server_command.get("value")):
+                            if self.rc.write(addr, value):
                                 write_t = {"response": "rc_write", "result": f"Successfully wrote the value {value} in register {addr}"}
                                 self.send_json(write_t)
                                 logger.info(f"Successfully wrote the value {value} in register {addr}")
@@ -219,6 +219,17 @@ class Client:
                                 write_f = {"response": "rc_write", "result": f"It was not possible to write the value {value} in register {addr}"}
                                 self.send_json(write_f)
                                 logger.info(f"It was not possible to write the value {value} in register {addr}")
+                        
+                        if command == "read_address":
+                            addr = server_command.get("address")
+                            if self.rc.read(addr):
+                                read_t = {"response": "rc_read", "result": f"{self.rc.read(addr)}"}
+                                self.send_json(read_t)
+                                logger.info(f"Successfully read the register {addr}")
+                            else:
+                                read_f = {"response": "rc_read", "result": f"{self.rc.read(addr)}"}
+                                self.send_json(read_f)
+                                logger.info(f"It was not possible to read the register {addr}")
                         
                         if command == "rc_monitoring":
                             regs = server_command.get("regs")

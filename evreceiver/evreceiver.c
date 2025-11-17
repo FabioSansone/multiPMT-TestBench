@@ -8,10 +8,10 @@
 #include <unistd.h> 
 #include <stdlib.h>
 #include <stdint.h>
-#include "runcontrol_acq.h"
 
 
-volatile uint32_t *rc_map = open_rc();
+
+
 
 
 #define EVENT_SIZE_WORDS 8  //8 parole da 16 bit => dimensione della parola dal DMA
@@ -88,69 +88,61 @@ int check_crc(const uint16_t *buffer) {
 
 
 
-void *run_control(void *args){
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+int start_control() {
+    void *ctx = zmq_ctx_new();
+    if (!ctx) return -1;
 
-    void *context_rc = zmq_ctx_new ();
-    assert(context_rc != NULL);
+    void *sock = zmq_socket(ctx, ZMQ_PUB);
+    if (!sock) zmq_ctx_destroy(ctx); return -1;
 
-    void *rc_socket = zmq_socket (context_rc, ZMQ_PUB);
-    assert(rc_socket != NULL);
+    int linger_ms = 100;
+    zmq_setsockopt(sock, ZMQ_LINGER, &linger_ms, sizeof(linger_ms));
 
-    int check_rc_bind = zmq_bind(rc_socket, "tcp://*:4444");
-    if (check_rc_bind != 0){
+    if (zmq_bind(sock, "tcp://*:4444") != 0) {
         printf("Bind Error: %s\n", zmq_strerror(zmq_errno()));
-        return NULL;
+        zmq_close(sock);
+        zmq_ctx_destroy(ctx);
+        return -1;
     }
 
-    printf("RC binded on port 4444\n");
-    
+    usleep(300000);
 
-    sleep(1);
+    zmq_send(sock, "control", 7, ZMQ_SNDMORE);
+    zmq_send(sock, "start", 5, 0);
+    printf("Sent START message\n");
 
-    rc_write(rc_map, 19, 127);
+    zmq_close(sock);
+    zmq_ctx_destroy(ctx);
+    return 0;
+}
 
-    zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE);
-    zmq_send(rc_socket, "start", 5, 0);
-    printf("Sent START message (topic: control)\n");
-    
-    while(keep_running){
-        sleep(1);
+int stop_control() {
+    void *ctx = zmq_ctx_new();
+    if (!ctx) return -1;
+
+    void *sock = zmq_socket(ctx, ZMQ_PUB);
+    if (!sock)  zmq_ctx_destroy(ctx); return -1;
+
+    int linger_ms = 100;
+    zmq_setsockopt(sock, ZMQ_LINGER, &linger_ms, sizeof(linger_ms));
+
+    if (zmq_bind(sock, "tcp://*:4444") != 0) {
+        printf("Bind Error: %s\n", zmq_strerror(zmq_errno()));
+        zmq_close(sock);
+        zmq_ctx_destroy(ctx);
+        return -1;
     }
 
-    rc_write(rc_map, 19, 0);
-    int read_15 = rc_read(rc_map, 15);
-    rc_write(rc_map, 15, 32+read_15);
+    usleep(300000);
 
-    int check_reg15 = rc_read(rc_map, 15);
-    int check_flush = (check_reg15 >> 6) & 1;
+    zmq_send(sock, "control", 7, ZMQ_SNDMORE);
+    zmq_send(sock, "stop", 4, 0);
 
-    if (check_flush == 1){
-        rc_write(rc_map, 15, read_15);
-        zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
-        zmq_send(rc_socket, "stop", 4, 0);
-        printf("Sent STOP message\n");
-
-        zmq_close(rc_socket);
-        zmq_ctx_destroy(context_rc);
-        return NULL;
-
-    }
-
-    printf("It was not possible to make the flush of the last data. Check for problems...");
-    rc_write(rc_map, 15, read_15);
-    zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
-    zmq_send(rc_socket, "stop", 4, 0);
     printf("Sent STOP message\n");
 
-    zmq_close(rc_socket);
-    zmq_ctx_destroy(context_rc);
-    return NULL;
-    
-
-
-
+    zmq_close(sock);
+    zmq_ctx_destroy(ctx);
+    return 0;
 }
 
 
@@ -330,43 +322,32 @@ void *process_data(void *file_ptr_void) {
 
 
 
+int run(int duration, const char *output_path){
 
-int main(int argc, char *argv[]){
+    keep_running = 1;
+    queue_head = 0;
+    queue_tail = 0;
+    queue_count = 0;
 
-    if(argc < 2){
-        printf("Usage: %s output_file.csv\n", argv[0]);
-        return 1;
-    }
-
-    FILE *fout = fopen(argv[1], "w");
+    signal(SIGINT, sig_handler);
+    
+    FILE *fout = fopen(output_path, "w");
     if (!fout) {
         perror("Error opening output file");
         return 1;
     }
 
-    int duration = 0; // 0 = infinity
-    if(argc >= 3){
-        duration = atoi(argv[2]);
-        if(duration<0) duration = 0; //fallback for invalid argument
-    }
-
-    signal(SIGINT, sig_handler);  
-
     fprintf(fout, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
 
-    pthread_t receiver, processing, rc_thread;
+    pthread_t receiver, processing;
     pthread_mutex_init(&lock, NULL);
 
-    pthread_create(&rc_thread, NULL, run_control, NULL);
     pthread_create(&receiver, NULL, receive_data, NULL);
     pthread_create(&processing, NULL, process_data, fout);
 
     time_t start = time(NULL);
 
     while (keep_running) {
-        puts("Running...");
-        sleep(1);
-
         if (duration > 0){
             time_t now = time(NULL);
             if (difftime(now, start) >= duration){
@@ -375,18 +356,80 @@ int main(int argc, char *argv[]){
                 break;
             }
         }
+        sleep(1);
     }
-
-    puts("Stopping threads...");
 
     pthread_cond_broadcast(&data_available);
     pthread_cond_broadcast(&space_available);
     pthread_join(receiver, NULL);
     pthread_join(processing, NULL);
-    pthread_join(rc_thread, NULL);
 
     fclose(fout);
-    puts("Stopped by signal `SIGINT'");
-    return 0;
+
+    if (duration > 0 && time(NULL) - start >= duration)
+        return 1;
+    else
+        return 0;
+
 }
+
+
+// int main(int argc, char *argv[]){
+
+//     if(argc < 2){
+//         printf("Usage: %s output_file.csv\n", argv[0]);
+//         return 1;
+//     }
+
+//     FILE *fout = fopen(argv[1], "w");
+//     if (!fout) {
+//         perror("Error opening output file");
+//         return 1;
+//     }
+
+//     int duration = 0; // 0 = infinity
+//     if(argc >= 3){
+//         duration = atoi(argv[2]);
+//         if(duration<0) duration = 0; //fallback for invalid argument
+//     }
+
+//     signal(SIGINT, sig_handler);  
+
+//     fprintf(fout, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
+
+//     pthread_t receiver, processing, rc_thread;
+//     pthread_mutex_init(&lock, NULL);
+
+//     pthread_create(&rc_thread, NULL, run_control, NULL);
+//     pthread_create(&receiver, NULL, receive_data, NULL);
+//     pthread_create(&processing, NULL, process_data, fout);
+
+//     time_t start = time(NULL);
+
+//     while (keep_running) {
+//         puts("Running...");
+//         sleep(1);
+
+//         if (duration > 0){
+//             time_t now = time(NULL);
+//             if (difftime(now, start) >= duration){
+//                 printf("Acquisition time (%d sec) elapsed, stop!\n", duration);
+//                 keep_running = 0;
+//                 break;
+//             }
+//         }
+//     }
+
+//     puts("Stopping threads...");
+
+//     pthread_cond_broadcast(&data_available);
+//     pthread_cond_broadcast(&space_available);
+//     pthread_join(receiver, NULL);
+//     pthread_join(processing, NULL);
+//     pthread_join(rc_thread, NULL);
+
+//     fclose(fout);
+//     puts("Stopped by signal `SIGINT'");
+//     return 0;
+// }
 
