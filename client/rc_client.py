@@ -44,7 +44,7 @@ class RC:
     def read(self, addr):
         if (self.checkRegBoundary(self.auto_int(addr))):
             value = int.from_bytes(self.regs[self.auto_int(addr)*4:(self.auto_int(addr)*4)+4], byteorder='little')
-            return (f'0x{value:08x}', value)
+            return value
         else:
             return None
 
