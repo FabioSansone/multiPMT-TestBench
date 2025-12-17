@@ -100,7 +100,7 @@ class DataProcess:
         #flush_process = subprocess.run([str(flush_exe), "30"], capture_output=True, text=True)
         #if flush_process.returncode != 0:
         #    logger.error(f"flush_fifo failed:\n{flush_process.stderr}")
-        logger.info("Starting acquisition...")
+        logger.info("Starting acquisition... ")
         run_folder = self.get_folder_path(flag_acq=flag_acq, run_id=run_id, number=number)
         filename = self.check_file_exists(DataProcess.get_file_name(suffix))
         filepath = run_folder / filename

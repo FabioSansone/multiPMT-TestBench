@@ -9,6 +9,7 @@ import datetime
 import os
 import subprocess
 import ctypes
+import threading
 
 logger = logging.getLogger("Server")
 
@@ -29,11 +30,12 @@ FOLDER_ACQ = {
     "spe_equal": "spe_equal_gains/"
 }
 
+
 #####################################
 #RUN CONTROL COMMUNICATION FUNCTIONS#
 #####################################
 
-def RCWrite(socket:zmq.Socket, clients: List[bytes], addr : int, value: int, output_func: Callable[[str], None]) -> None:
+def RCWrite(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, value: int, output_func: Callable[[str], None]) -> None:
     """
     Sends an RC write command to connected clients.
 
@@ -55,6 +57,10 @@ def RCWrite(socket:zmq.Socket, clients: List[bytes], addr : int, value: int, out
             "address": addr,
             "value": value
         }
+    
+    if isinstance(clients, bytes):
+        clients = [clients]
+        
     logger.info(f"Sending RC command to client: {command_rc_write}")
 
     for client in clients:
@@ -70,7 +76,7 @@ def RCWrite(socket:zmq.Socket, clients: List[bytes], addr : int, value: int, out
             output_func("Failed to decode the RC response.")
 
 
-def RCRead(socket:zmq.Socket, clients: List[bytes], addr : int, output_func: Callable[[str], None]) -> None:
+def RCRead(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, output_func: Callable[[str], None]) -> None:
     """
     Sends an RC read command to connected clients.
 
@@ -85,6 +91,12 @@ def RCRead(socket:zmq.Socket, clients: List[bytes], addr : int, output_func: Cal
         It then waits for a response and, if the response indicates a successful RC red,
         outputs the result using the provided output function.
     """
+    
+    client_rc_read_values = {}
+    
+    if isinstance(clients, bytes):
+        clients = [clients]
+    
     command_rc_read = {
             "type": "rc_command",
             "command": "read_address",
@@ -100,15 +112,17 @@ def RCRead(socket:zmq.Socket, clients: List[bytes], addr : int, output_func: Cal
             if read[0] == client and response.get("response") == "rc_read":
                 value = response.get("result")
                 if value:
-                    output_func(f"It was possible to read the register {addr} with value ",value)
-                    return value
+                    output_func(f"It was possible to read the register {addr} with value {value}")
+                    client_rc_read_values[client] = int(value)
                 else:
                     output_func("It was not possible to read the selected register")
-                    return value
+                    client_rc_read_values[client] = int(value)
         except Exception as e:
             output_func(f"Problem occured writing RC registers: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the RC response.")
+            
+        return client_rc_read_values
 
 def RCMonitoring(socket:zmq.Socket, clients: List[bytes], registers: Union[List[int], str], batch:int, flag_acq:str, suffix: str, run_id: str, output_func: Callable[[str], None]):
 
@@ -467,6 +481,32 @@ def HVProgFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union
         except json.JSONDecodeError:
             output_func("Failed to decode the start up response.")
 
+
+
+######################################
+#TRIGGER FUNCTIONS#
+######################################
+
+def TriggerModeSelect(socket: zmq.Socket, clients: List[bytes], trg_choice: Union[int, None], output_func: Callable[[str], None]) -> None:
+    output_func("Select 1 for External Trigger Mode.\n Select 0 for Internal Trigger Mode.\n")
+    output_func("Default mode is External Trigger Mode.\n")
+    output_func("Remember to enable the trigger diring acquisitions.\n")
+
+    prev_15_dict = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+
+    for client in clients:
+        prev_15_value = prev_15_dict[client]
+        if(trg_choice == 1):
+            RCWrite(socket=socket, clients=client, addr=15, value=prev_15_value+16, output_func=output_func)
+            output_func("External Trigger Mode selected.\n")
+        else:
+            RCWrite(socket=socket, clients=client, addr=15, value=prev_15_value, output_func=output_func)
+            output_func("Internal Trigger Mode selected.\n")
+
+
+
+
+
 ######################################
 #DMA COMMUNICATION FUNCTIONS#
 ######################################
@@ -536,6 +576,32 @@ def CompileCLibrary(force_compile=False):
 
     return output_lib
 
+def FlushThread(socket:zmq.Socket, clients: List[bytes], output_func: Callable[[str], None]) -> None:
+
+    time.sleep(20)
+
+    for client in clients:
+        read_prev_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
+        read_prev_15 = read_prev_15_dict[client]
+        time.sleep(0.1)
+
+        if read_prev_15 is not None:
+            RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15+32, output_func=output_func)
+            time.sleep(0.1)
+
+            read_now_15_dict = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+            read_now_15 = read_now_15_dict[client]
+            time.sleep(0.1)
+
+            if (read_now_15-read_prev_15-32 == 64):
+                output_func("Data flushing ended successfully")
+                RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15, output_func=output_func)
+                time.sleep(0.1)
+
+            else:
+                output_func(f"Problems occured durign the flushing of the last data with client {client}. Please check")
+
+
 
 def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_acquisition:str, run_id:Union[str, None], 
                      timer:int, batch:int, output_func: Callable[[str], None]) -> None:
@@ -551,9 +617,10 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     run_folder = GetFolderPath(flag_acq=flag_acquisition, run_id=run_id, number=batch)
     filename = CheckFileExist(GetFileName(suffix))
     filepath = run_folder / filename
+    filepath = str(filepath).encode('utf-8')
     
     ###Compiling evreceiver###
-    lib_path = CompileCLibrary(force_compile=False)
+    lib_path = CompileCLibrary(force_compile=True)
     c_lib = ctypes.CDLL(str(lib_path))
 
     ###Enabling the channels###
@@ -561,17 +628,17 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     time.sleep(0.1)
 
     ###Starting the Evproducer###
-    c_lib.start_control.argtypes = []
-    c_lib.start_control.restype = ctypes.c_int
-    result_start = c_lib.start_control()
-    if (result_start != 0):
-        output_func("Problem in starting Evproducer. Check the log for more information")
-        return 
+    # c_lib.start_control.argtypes = []
+    # c_lib.start_control.restype = ctypes.c_int
+    # result_start = c_lib.start_control()  
+    # if result_start != 0:  
+    #     output_func(f"Problem in starting Evproducer. Error code: {result_start}")
+    #     return  
     
     ###Starting the acquisition###
-    c_lib.run.argtypes = [ctypes.c_int, ctypes.c_char_p]
+    c_lib.run.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     c_lib.run.restype = ctypes.c_int
-    result_run = c_lib.run(timer, filepath.encode('utf-8'))
+    result_run = c_lib.run(timer, filepath, 0)
     if (result_run == 1):
         output_func("Acquisition time elapsed. Flushing last data...")
     elif(result_run == 0):
@@ -585,29 +652,34 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     time.sleep(0.1)
 
     ###Flushing last data###
-    read_prev_15 = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
-    time.sleep(0.1)
-    if read_prev_15:
-        RCWrite(socket=socket, clients=clients, addr=15, value=read_prev_15+32, output_func=output_func)
-        time.sleep(0.1)
-        read_now_15 = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
-        time.sleep(0.1)
-        if (read_now_15-read_prev_15-32 == 64):
-            output_func("Data flushing ended successfully")
-            RCWrite(socket=socket, clients=clients, addr=15, value=read_prev_15, output_func=output_func)
-            time.sleep(0.1)
-        else:
-            output_func("Problems occured durign the flushing of the last data. Please check")
-            return
+    flush_thread = threading.Thread(
+        target=FlushThread, 
+        args=(socket, clients, output_func),
+        daemon=True  
+    )
+    flush_thread.start()
+
+    run_flush = c_lib.run(60, filepath, 1)
+
+    if (run_flush == 1):
+        output_func("Flushing time elapsed. Stopping evproducer...")
+    elif(run_flush == 0):
+        output_func("Flushing stopped by user before completition. Be aware of possible data loss!")
+    else:    
+        output_func("An error occured durign the flushing of the data. Please check")
+        
+
+    flush_thread.join()
     
     ###Stopping evproducer###
-    c_lib.stop_control.argtypes = []
-    c_lib.stop_control.restype = ctypes.c_int
-    result_stop = c_lib.stop_control()
-    if (result_stop != 0):
-        output_func("Problem in stopping Evproducer. Check the log for more information")
-        return 
+    # c_lib.stop_control.argtypes = []
+    # c_lib.stop_control.restype = ctypes.c_int
+    # result_stop = c_lib.stop_control()
+    # if (result_stop != 0):
+    #     output_func("Problem in stopping Evproducer. Check the log for more information")
+    #     return 
 
+    output_func("Acquisition completed successfully!")
 
 ######################################
 #MONITORING#

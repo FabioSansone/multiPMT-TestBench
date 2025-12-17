@@ -33,6 +33,8 @@ int queue_head = 0;
 int queue_tail = 0;
 int queue_count = 0;
 
+static void *context_rc = NULL; 
+static void *rc_socket = NULL;
 
 
 pthread_mutex_t lock;
@@ -105,41 +107,54 @@ int check_crc(const uint16_t *buffer) {
 
 
 
-void *run_control(void *args){ 
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL); 
-    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL); 
-    
-    void *context_rc = zmq_ctx_new (); 
-    assert(context_rc != NULL); 
-    
-    void *rc_socket = zmq_socket (context_rc, ZMQ_PUB); 
-    assert(rc_socket != NULL); 
-    
-    int check_rc_bind = zmq_bind(rc_socket, "tcp://*:4444"); 
-    if (check_rc_bind != 0){ 
-        printf("Bind Error: %s\n", zmq_strerror(zmq_errno())); 
-        return NULL; 
-    } 
-    printf("RC binded on port 4444\n"); 
-    
-    sleep(1); 
-    
-    zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
-    zmq_send(rc_socket, "start", 5, 0); 
-    printf("Sent START message (topic: control)\n"); 
-    
-    while(keep_running){ 
+int start_control() { 
+    if (context_rc == NULL){ 
+        context_rc = zmq_ctx_new (); 
+        assert(context_rc != NULL); 
+        
+        rc_socket = zmq_socket (context_rc, ZMQ_PUB); 
+        assert(rc_socket != NULL); 
+        
+        int check_rc_bind = zmq_bind(rc_socket, "tcp://*:4444"); 
+        if (check_rc_bind != 0){ 
+            printf("Bind Error: %s\n", zmq_strerror(zmq_errno())); 
+            return -1; 
+        } 
+        
+        printf("RC binded on port 4444\n"); 
+        
         sleep(1); 
     } 
     
     zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
-    zmq_send(rc_socket, "stop", 4, 0); 
-    printf("Sent STOP message\n"); 
+    zmq_send(rc_socket, "start", 5, 0);
+    printf("Sent START message (topic: control)\n"); 
+
+    return 0; 
+
+} 
+
+
+int stop_control() { 
+    if (rc_socket == NULL || context_rc == NULL) {
+        printf("STOP called but socket/context not initialized!\n"); 
+        return -1; 
+    } 
+    
+    zmq_send(rc_socket, "control", 7, ZMQ_SNDMORE); 
+    zmq_send(rc_socket, "stop", 5, 0); 
+    
+    printf("Sent STOP message (topic: control)\n"); 
+    
     zmq_close(rc_socket); 
     zmq_ctx_destroy(context_rc); 
     
-    return NULL; 
+    rc_socket = NULL; 
+    context_rc = NULL; 
+    
+    return 0; 
 }
+
 
 
 void *receive_data(void *args) {
@@ -366,11 +381,10 @@ int run(int duration, const char *output_path, int flag_flush){
 
     fprintf(fout, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
 
-    pthread_t receiver, processing, rc_thread;
+    pthread_t receiver, processing;
 
     pthread_create(&receiver, NULL, receive_data, NULL);
     pthread_create(&processing, NULL, process_data, fout);
-    pthread_create(&rc_thread, NULL, run_control, NULL);
 
     time_t start = time(NULL);
 
@@ -386,18 +400,18 @@ int run(int duration, const char *output_path, int flag_flush){
         sleep(1);
     }
 
-    //printf("DEBUG: Out of while loop, now joining threads\n");
+    printf("DEBUG: Out of while loop, now joining threads\n");
 
     pthread_cond_broadcast(&data_available);
     pthread_cond_broadcast(&space_available);
     pthread_join(receiver, NULL);
-    //printf("DEBUG: receiver thread joined\n");
+    printf("DEBUG: receiver thread joined\n");
     pthread_join(processing, NULL);
-    pthread_join(rc_thread, NULL);
+    printf("DEBUG: processing thread joined\n");
 
 
     fclose(fout);
-    //printf("DEBUG: File closed\n");
+    printf("DEBUG: File closed\n");
 
     if (duration > 0 && time(NULL) - start >= duration)
         return 1;

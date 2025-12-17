@@ -23,7 +23,7 @@ main_info = {'cile1' : 'Main_v1_SN02_cile1',
              'milano': 'Main_v1_SN04_milano'}
 
 #Generic Constants
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 DISCOVERY_PORT = 8001
 CHANNELS = 7
 
@@ -56,7 +56,7 @@ class Server(cmd2.Cmd):
         super().__init__()
         self.context = context
         self.main_id = None
-        self.flag_status_file = 0
+        self.flag_status_file = 1 #ATTENZIONE - MODIFICARE PER INCLUDERE IL FILE (METTERE A 0)
         self.flag_acq_multi = 1
         self.flag_test = None
         self.server = None
@@ -255,6 +255,9 @@ class Server(cmd2.Cmd):
     ###############################
     # RC
     ###############################
+    
+    def _rc_read(self, addr):
+        HardwareResources.RCRead(self.server, self.clients_connected, addr, self.poutput)
 
     def _rc_write(self, addr, value):
         HardwareResources.RCWrite(self.server, self.clients_connected, addr, value, self.poutput)
@@ -279,6 +282,9 @@ class Server(cmd2.Cmd):
     def _pwr_on(self, channels, port="/dev/ttyPS1"):
         HardwareResources.HVPowerOn(socket=self.server, clients=self.clients_connected, port=port, channels=channels, output_func=self.poutput)
     
+    def _pwr_off(self, channels, port="/dev/ttyPS1"):
+        HardwareResources.HVPowerOff(socket=self.server, clients=self.clients_connected, port=port, channels=channels, output_func=self.poutput)
+        
     def _pwr_off(self, channels, port="/dev/ttyPS1"):
         HardwareResources.HVPowerOff(socket=self.server, clients=self.clients_connected, port=port, channels=channels, output_func=self.poutput)
 
@@ -311,6 +317,9 @@ class Server(cmd2.Cmd):
     def _monitoring_all(self, rc_flag, hv_flag, mon_flag, flag_acq, suffix, run_id):
         HardwareResources.Monitoring(socket=self.server, clients=self.clients_connected, rc_flag=rc_flag, hv_flag=hv_flag, mon_flag=mon_flag, batch=self.batch, 
                                      flag_acq=flag_acq, suffix=suffix, run_id=run_id, output_func=self.poutput)
+    
+    def _trigger_choice(self, trg_choice):
+        HardwareResources.TriggerModeSelect(socket=self.server, clients=self.clients_connected, trg_choice=trg_choice, output_func=self.poutput)
 
     ###############################
     # START UP  
@@ -480,7 +489,7 @@ class Server(cmd2.Cmd):
             def wrapper(self, *args, **kwargs):
                 test = getattr(self, 'flag_test', 0)
                 multi = getattr(self, 'flag_acq_multi', 0)
-                status = getattr(self, 'flag_status_file', 0)
+                status = getattr(self, 'flag_status_file', 1) #ATTENZIONE - METTERE DEFAULT A 0 SE SI VUOLE INCLUEDERE IL CHECK SUL FILE
 
                 # Case 1: System not secured -> Only setup and safety
                 if test == 1:
@@ -978,13 +987,13 @@ class Server(cmd2.Cmd):
             self.flag_test = int(args.flag_test)
             self.main_id = str(args.main_id)
             self.flag_acq_multi = int(args.flag_acq_multi)
-            if self.flag_acq_multi:
-                try:
-                    self._info_file_check()
-                except Exception as e:
-                    self.poutput(f"Info file checking had a problem {e}. Exiting connection...")
-                    self._clean_up()
-                    self.prompt = f"|Server>"
+            # if self.flag_acq_multi:
+            #     try:
+            #         self._info_file_check()
+            #     except Exception as e:
+            #         self.poutput(f"Info file checking had a problem {e}. Exiting connection...")
+            #         self._clean_up()
+            #         self.prompt = f"|Server>"
         else:
             self.poutput(f"Something went wrong during the handshake with the multiPMTs ")
 
@@ -1099,6 +1108,16 @@ class Server(cmd2.Cmd):
     ############
     # RC
     ############
+    
+    rc_read = argparse.ArgumentParser()
+    rc_read.add_argument("rc_read_addr", type=int, help="The address of the register of the Run Control intended to be read")
+
+    @cmd2.with_argparser(rc_read)
+    @cmd2.with_category("RC")
+    @command_guard('safety_only')
+    def do_read(self, args: argparse.Namespace) -> None:
+        "Function to read user specified values in the Run Control registers"
+        self._rc_read(args.rc_write_addr)
 
     rc_write = argparse.ArgumentParser()
     rc_write.add_argument("rc_write_addr", type=int, help="The address of the register of the Run Control intended to be wrote")
@@ -1147,7 +1166,7 @@ class Server(cmd2.Cmd):
         self._set_voltage(args.channels, args.voltage_set, args.port)
 
     hv_on = argparse.ArgumentParser()
-    hv_on.add_argument("channels", type=str, help="The channels intended to be configured")
+    hv_on.add_argument("channels", type=str, help="The channels intended to be powered on")
     hv_on.add_argument("--port", type=str, default="/dev/ttyPS1", help="The serial port used to communicate with the board")
 
     @cmd2.with_argparser(hv_on)
@@ -1156,6 +1175,18 @@ class Server(cmd2.Cmd):
     def do_on(self, args: argparse.Namespace) -> None:
         "Function to power on all or selected channels"
         self._pwr_on(args.channels, args.port)
+        
+    
+    hv_off = argparse.ArgumentParser()
+    hv_off.add_argument("channels", type=str, help="The channels intended to be powered off")
+    hv_off.add_argument("--port", type=str, default="/dev/ttyPS1", help="The serial port used to communicate with the board")
+
+    @cmd2.with_argparser(hv_off)
+    @cmd2.with_category("HV")
+    @command_guard('characterization')
+    def do_off(self, args: argparse.Namespace) -> None:
+        "Function to power off all or selected channels"
+        self._pwr_off(args.channels, args.port)
 
 
     hv_calib = argparse.ArgumentParser()
@@ -1195,6 +1226,17 @@ class Server(cmd2.Cmd):
     ############
     # DAQ
     ############
+
+
+    trg_choice = argparse.ArgumentParser()
+    trg_choice.add_argument("trg_choice", type=int, default=1, help="Trigger Mode selection. 1 for External Trigger, 0 for Internal Trigger")
+
+    @cmd2.with_argparser(trg_choice)
+    @cmd2.with_category("DAQ")
+    @command_guard('safety')
+    def do_trigger(self, args: argparse.Namespace) -> None:
+        """Function to select the trigger mode"""
+        self._trigger_choice(trg_choice=args.trg_choice)
 
     daq_charge = argparse.ArgumentParser()
     daq_charge.add_argument("--timer", type=int, default=20, help="The time duration of the acquisition")

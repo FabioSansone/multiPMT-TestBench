@@ -15,7 +15,11 @@ import socket
 import struct
 import fcntl
 
+#Generic Constants
+MAX_RETRIES = 5
 
+#ZMQ Constants
+POLLER_TIMEOUT_CONNECTION = 20000 #in ms
 
 #########################################
 # Logging
@@ -99,6 +103,10 @@ class Client:
         
     def start_connection(self):
         try:
+            
+            if self.client:
+                self.client.close()
+                
             server_address = f"tcp://{self.server_ip}:{self.port}"
             self.client = self.context.socket(zmq.DEALER)
             self.client.setsockopt(zmq.IDENTITY, self.client_id)
@@ -107,68 +115,110 @@ class Client:
         except zmq.ZMQError as e:
             logger.critical(f"Failed to connect client on the server address {server_address}: {e}")
             self.client = None
-
+            
+        
     def handshake(self):
+        
         if self.client is None:
             return False
-        connected = False
-        last_ping = time.time()
-        while not connected:
+        
+        connected = False        
+        attempt_hand = 0
+        
+        poller_hand = zmq.Poller()
+        poller_hand.register(self.client, zmq.POLLIN)
+        
+        while not connected and (attempt_hand <= MAX_RETRIES):
             try:
-                if (time.time() - last_ping) >= PING_INTERVAL:
-                    self.client.send(b"Ping")
-                    logger.info("Ping signal sent")
-                    last_ping = time.time()
-                else:
-                    time.sleep(PING_INTERVAL)
-                    logger.info("No response from server. Reconnecting...")
+                self.client.send(b"Ping")
+                logger.info(f"Ping signal sent (attempt {attempt_hand + 1})")
+                
+                events_hand = dict(poller_hand.poll(POLLER_TIMEOUT_CONNECTION))
+                
+                if not events_hand:
+                    attempt_hand += 1
+                    logger.warning(f"No response from server, retry {attempt_hand}/{MAX_RETRIES}")
+                    time.sleep(1)
                     continue
-                message = self.client.recv()
-                if message == b"Alive":
-                    logger.info("Server responded. Connection established")
-                    self.client.send(b"Connection successful")
-                    evproducer = self.client.recv()
-                    if evproducer == b"EV":
-                        self.rc.write(1, 127)
-                        time.sleep(0.1)
-                        self.rc.write(0, 127)
-                        time.sleep(0.1)
-                        self.rc.write(10, 65)
-                        time.sleep(0.1)
-                        self.rc.write(19, 0)
-                        time.sleep(0.1)
-                        self.rc.write(15, 0)
-                        time.sleep(0.1)
-                        self.rc.write(16, 0)
-                        time.sleep(0.1)
-                        exec_command = ["./evproducer.sh", self.server_ip]
-                        logger.info(f"Executing evproducer with: {exec_command}")
-                        try:
-                            process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            logger.info("Evproducer has started successfully")
-                        except Exception as e:
-                            logger.error(f"Failed to start evproducer: {e}")
-                            
-                        self.client.send(b"EV Success")
+                
+                if self.client in events_hand:
+                    message = self.client.recv()
+                    
+                    if message == b"Alive":
+                        logger.info("Server responded. Connection established")
+                        self.client.send(b"Connection successful")
+                        
+                        events_ev = dict(poller_hand.poll(POLLER_TIMEOUT_CONNECTION))
+                        if self.client in events_ev:
+                            evproducer = self.client.recv()
+                            if evproducer == b"EV":
+                                try:
+                                    self.rc.write(1, 127)
+                                    time.sleep(0.1)
+                                    self.rc.write(0, 127)
+                                    time.sleep(0.1)
+                                    self.rc.write(10, 65)
+                                    time.sleep(0.1)
+                                    self.rc.write(19, 0)
+                                    time.sleep(0.1)
+                                    self.rc.write(15, 0)
+                                    time.sleep(0.1)
+                                    self.rc.write(16, 0)
+                                    time.sleep(0.1)
+                                except Exception as e:
+                                    logger.error(f"RC setup failed: {e}")
+                                    return False
+                                
+                                try:
+                                    exec_command = ["./evproducer.sh", self.server_ip]
+                                    process = subprocess.Popen(exec_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    logger.info("Evproducer started successfully")
+                                except Exception as e:
+                                    logger.error(f"Failed to start evproducer: {e}")
+                                    return False
+                                    
+                                self.client.send(b"EV Success")
 
-                        hv_setting = self.receive_json()
-                        if hv_setting == 0:
-                            logger.info("Setting the HV Configuration and powering on the system")
-                            self.hv.setInitConfiguration(channels="all", voltage_set=1200, threshold_set=100, limit_trip_time=2, limit_voltage=100, limit_current=5, limit_temperature=50, rate_up=25, rate_down=25)
-                            self.hv.power_on(channels="all")
-                            self.client.send(b"HV Success")
-                            connected = True
-                            return True
-                        else:
-                            logger.info("This is a test configuration for the FEB. No need to set the HV and power up the system")
-                            self.client.send(b"Test Success")
-                            connected = True
-                            return True
+                                hv_setting = self.receive_json()
+                                try:
+                                    if hv_setting == 0:
+                                        logger.info("Setting the HV Configuration and powering on the system")
+                                        self.hv.setInitConfiguration(channels="all", voltage_set=1200, threshold_set=100, limit_trip_time=2, limit_voltage=100, limit_current=5, limit_temperature=50, rate_up=25, rate_down=25)
+                                        self.hv.power_on(channels="all")
+                                        self.client.send(b"HV Success")
+                                    else:
+                                        logger.info("Test configuration: skipping HV setup")
+                                        self.client.send(b"Test Success")
+                                
+                                except Exception as e:
+                                    logger.error(f"HV setup failed: {e}")
+                                    return False  
+                                
+                                connected = True
+                                return True    
+
+                            else:
+                                logger.warning(f"Unexpected message instead of EV: {evproducer}")
+                                attempt_hand += 1
+                                continue
+                    
+                    else:
+                        logger.warning(f"Unexpected handshake message: {message}")
+                        attempt_hand += 1
+                        continue
+                    
             except zmq.ZMQError as e:
                 logger.critical(f"ZMQ Error during handshake: {e}")
             except Exception as e:
                 logger.critical(f"Unexpected error during handshake: {e}")
 
+        
+        logger.error("Handshake failed after maximum retries")
+        return False
+    
+    
+    
+    
     def handle_commands(self):
 
         poller = zmq.Poller()
@@ -308,13 +358,7 @@ class Client:
                             firmware = server_command.get("firmware")
                             set_start_up = {"response": "hv_start_up", "result": progFEB.main(channels=channel, port=port, baud=baud, firmware=firmware, rc=rc, hv=hv)}
                             self.send_json(set_start_up)
-                    
-
-                    
-
-
-                            
-                
+                           
 
             except zmq.ZMQError as e:
                 logger.critical(f"ZMQ Error while handling commands: {e}")
@@ -340,16 +384,30 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     server_ip = args.server_ip
+    
+    # Se non è fornito IP, provo a scoprirlo dinamicamente
     if not server_ip:
-        # Se non è fornito IP, provo a scoprirlo dinamicamente
-        broadcast_ip = get_broadcast_address(interface=args.interface)
-        logger.info(f"Trying to discover server IP using broadcast on {broadcast_ip}")
-        server_ip = discover_server_ip(broadcast_ip=broadcast_ip, port=args.port)
-        if server_ip is None:
-            logger.critical("Server discovery failed. Exiting.")
-            exit(1)
-        else:
+        attempt = 0
+        while True:
+            attempt += 1
+                    
+            broadcast_ip = get_broadcast_address(interface=args.interface)
+            logger.info(f"[Attempt {attempt}] Trying to discover server on {broadcast_ip}")
+            
+            server_ip = discover_server_ip(broadcast_ip=broadcast_ip, port=args.port)
+            
+            if server_ip is None:
+                if (attempt % 10 == 0):
+                    logger.critical("Server still not found after 10 attempts. Check the server status.")
+                else:  
+                    logger.warning("Server discovery failed. Retrying in 2 seconds...")
+                time.sleep(2)
+                continue
+
             logger.info(f"Discovered server IP: {server_ip}")
+            break
+            
+            
 
     if args.hv_interface == "tcp":
         params = SimpleNamespace(mode = 'tcp',
