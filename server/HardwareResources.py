@@ -579,7 +579,13 @@ def CompileCLibrary(force_compile=False):
 def FlushThread(socket:zmq.Socket, clients: List[bytes], output_func: Callable[[str], None]) -> None:
 
     time.sleep(20)
-
+    RCWrite(socket=socket, clients=clients, addr=15, value=0, output_func=output_func)
+    time.sleep(0.1)
+    RCWrite(socket=socket, clients=clients, addr=16, value=0, output_func=output_func)
+    time.sleep(0.1)
+    RCWrite(socket=socket, clients=clients, addr=18, value=0, output_func=output_func)
+    time.sleep(0.1)
+    
     for client in clients:
         read_prev_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
         read_prev_15 = read_prev_15_dict[client]
