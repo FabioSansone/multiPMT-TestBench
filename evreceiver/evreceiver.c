@@ -148,11 +148,9 @@ void *receive_data(void *args) {
 
     void *context = zmq_ctx_new();
     void *server_socket = zmq_socket(context, ZMQ_ROUTER);
-    
 
-    int bind_result = zmq_bind(server_socket, "tcp://*:5555");
-    if (bind_result != 0) {
-        printf("ERROR binding to port 5555: %s\n", zmq_strerror(zmq_errno()));
+    if (zmq_bind(server_socket, "tcp://*:5555") != 0) {
+        printf("ERROR binding: %s\n", zmq_strerror(zmq_errno()));
         zmq_close(server_socket);
         zmq_ctx_destroy(context);
         return NULL;
@@ -160,80 +158,80 @@ void *receive_data(void *args) {
 
     printf("Server binded on port 5555\n");
 
-    while(keep_running) {
+    while (keep_running) {
 
         zmq_pollitem_t items[] = {
             { server_socket, 0, ZMQ_POLLIN, 0 }
         };
-        
-        int poll_result = zmq_poll(items, 1, 60000);  // 60s timeout
 
-        if (poll_result == -1) {
-            printf("receive_data: zmq_poll error: %s\n", zmq_strerror(zmq_errno()));
-            break;
-        }
-
-        if (items[0].revents & ZMQ_POLLIN) {
-            zmq_msg_t part;
-            if (zmq_msg_init(&part) != 0) continue;
-
-            int recv_result = zmq_msg_recv(&part, server_socket, 0);  
-            if (recv_result == -1) {
-                zmq_msg_close(&part);
-                continue;
-            }
-
-            size_t part_size = zmq_msg_size(&part);
-            unsigned char *data = (unsigned char *)zmq_msg_data(&part);
-
-            if (part_size >= EVENT_SIZE_BYTES && (part_size % EVENT_SIZE_BYTES == 0)) {
-                size_t num_events = part_size / EVENT_SIZE_BYTES;
-                
-                pthread_mutex_lock(&lock);
-                
-                for (size_t event_idx = 0; event_idx < num_events; event_idx++) {
-                    while (queue_count >= QUEUE_SIZE && keep_running) {
-                        pthread_cond_wait(&space_available, &lock);
-                    }
-                    if (!keep_running) break;
-
-                    event_t new_event;
-                    new_event.valid = 1;
-
-                    size_t byte_offset = event_idx * EVENT_SIZE_BYTES;
-                    for (size_t word_idx = 0; word_idx < EVENT_SIZE_WORDS; word_idx++) {  
-                        size_t word_byte_offset = byte_offset + (word_idx * 2);
-                        if (word_byte_offset + 1 < part_size) {
-                            memcpy(&new_event.words[word_idx], 
-                                data + word_byte_offset, 
-                                sizeof(uint16_t));
-                        }
-                    }
-
-                    event_queue[queue_tail] = new_event;
-                    queue_tail = (queue_tail + 1) % QUEUE_SIZE;  
-                    queue_count++;
-                }
-                
-                if (num_events > 0) {
-                    pthread_cond_signal(&data_available);
-                }
-                
-                pthread_mutex_unlock(&lock);
-            } else if (part_size > 0) {
-                //printf("Warning: Received incomplete message of %zu bytes (not multiple of %d)\n", part_size, EVENT_SIZE_BYTES);
-            }
-
-            zmq_msg_close(&part);
-        }
-        /*
-        int more_msg;
-        size_t more_size = sizeof(more_msg);
-        zmq_getsockopt(server_socket, ZMQ_RCVMORE, &more_msg, &more_size);
-        if (more_msg) {
+        if (zmq_poll(items, 1, 100) <= 0) //100 ms timeout
             continue;
-        }
-        */
+
+        if (!(items[0].revents & ZMQ_POLLIN))
+            continue;
+
+        int more = 0;
+        size_t more_size = sizeof(more);
+        int frame_idx = 0;
+
+        unsigned char *payload = NULL;
+        size_t payload_size = 0;
+
+        do {
+            zmq_msg_t msg;
+            zmq_msg_init(&msg);
+
+            if (zmq_msg_recv(&msg, server_socket, 0) == -1) {
+                zmq_msg_close(&msg);
+                break;
+            }
+
+            if (frame_idx == 1) {
+                payload_size = zmq_msg_size(&msg);
+                payload = zmq_msg_data(&msg);
+
+                
+                if (payload_size >= EVENT_SIZE_BYTES &&
+                    (payload_size % EVENT_SIZE_BYTES) == 0) {
+
+                    size_t num_events = payload_size / EVENT_SIZE_BYTES;
+
+                    pthread_mutex_lock(&lock);
+
+                    for (size_t e = 0; e < num_events; e++) {
+                        while (queue_count >= QUEUE_SIZE && keep_running)
+                            pthread_cond_wait(&space_available, &lock);
+
+                        if (!keep_running)
+                            break;
+
+                        event_t ev;
+                        ev.valid = 1;
+
+                        size_t off = e * EVENT_SIZE_BYTES;
+                        for (size_t w = 0; w < EVENT_SIZE_WORDS; w++) {
+                            memcpy(&ev.words[w],
+                                   payload + off + w * 2,
+                                   sizeof(uint16_t));
+                        }
+
+                        event_queue[queue_tail] = ev;
+                        queue_tail = (queue_tail + 1) % QUEUE_SIZE;
+                        queue_count++;
+                    }
+
+                    if (num_events > 0)
+                        pthread_cond_signal(&data_available);
+
+                    pthread_mutex_unlock(&lock);
+                }
+            }
+
+            zmq_getsockopt(server_socket, ZMQ_RCVMORE, &more, &more_size);
+            zmq_msg_close(&msg);
+            frame_idx++;
+
+        } while (more && keep_running);
     }
 
     printf("receive_data: Thread exiting\n");
@@ -241,6 +239,7 @@ void *receive_data(void *args) {
     zmq_ctx_destroy(context);
     return NULL;
 }
+
 
 
 
