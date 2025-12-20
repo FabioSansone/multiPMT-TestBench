@@ -299,6 +299,10 @@ void *process_data(void *file_ptr_void) {
                     uint32_t tdc_time = get_bits(cut_buffer, 69, 5);
                     uint32_t energia = get_bits(cut_buffer, 74, 14);
 
+                    if (coarse_time == 0) {
+                        continue;
+                    }
+
                     int written = snprintf(write_buffer + buffer_used, 
                                          sizeof(write_buffer) - buffer_used,
                                          "%u,%u,%u,%u,%u,%u,%u\n",
@@ -363,7 +367,9 @@ int run(int duration, const char *output_path, int flag_flush){
         return 1;
     }
 
-    fprintf(fout, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
+    if (flag_flush == 0){
+        fprintf(fout, "Channel,Unix_time_16_bit,Coarse_time,TDC_time,ToT_time,TDC_trigger_end,Energy\n");
+    }
 
     pthread_t receiver, processing, rc_thread;
 

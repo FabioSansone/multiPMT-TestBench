@@ -706,7 +706,7 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
 
     flush_thread = threading.Thread(
         target=PeriodicFlushThread,
-        args=(socket, clients, stop_flush_event, 1.0, output_func),
+        args=(socket, clients, stop_flush_event, 3600.0, output_func),
         daemon=False
     )
     flush_thread.start()
