@@ -11,6 +11,8 @@ import subprocess
 import ctypes
 import threading
 
+socket_lock = threading.Lock()
+
 logger = logging.getLogger("Server")
 
 ###################
@@ -111,7 +113,7 @@ def RCRead(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, ou
             response = json.loads(read[1].decode("utf-8"))
             if read[0] == client and response.get("response") == "rc_read":
                 value = response.get("result")
-                if value:
+                if value is not None:
                     output_func(f"It was possible to read the register {addr} with value {value}")
                     client_rc_read_values[client] = int(value)
                 else:
@@ -122,7 +124,7 @@ def RCRead(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, ou
         except json.JSONDecodeError:
             output_func("Failed to decode the RC response.")
             
-        return client_rc_read_values
+    return client_rc_read_values
 
 def RCMonitoring(socket:zmq.Socket, clients: List[bytes], registers: Union[List[int], str], batch:int, flag_acq:str, suffix: str, run_id: str, output_func: Callable[[str], None]):
 
@@ -577,36 +579,94 @@ def CompileCLibrary(force_compile=False):
     return output_lib
 
 def FlushThread(socket:zmq.Socket, clients: List[bytes], output_func: Callable[[str], None]) -> None:
-
+    
     time.sleep(20)
-    RCWrite(socket=socket, clients=clients, addr=15, value=0, output_func=output_func)
-    time.sleep(0.1)
-    RCWrite(socket=socket, clients=clients, addr=16, value=0, output_func=output_func)
-    time.sleep(0.1)
-    RCWrite(socket=socket, clients=clients, addr=18, value=0, output_func=output_func)
-    time.sleep(0.1)
+    with socket_lock:
+        RCWrite(socket=socket, clients=clients, addr=15, value=0, output_func=output_func)
+        time.sleep(0.1)
+        RCWrite(socket=socket, clients=clients, addr=16, value=0, output_func=output_func)
+        time.sleep(0.1)
+        RCWrite(socket=socket, clients=clients, addr=18, value=0, output_func=output_func)
+        time.sleep(0.1)
     
     for client in clients:
-        read_prev_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
+        with socket_lock:
+            read_prev_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
         read_prev_15 = read_prev_15_dict[client]
         time.sleep(0.1)
 
         if read_prev_15 is not None:
-            RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15+32, output_func=output_func)
+            with socket_lock:
+                RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15+32, output_func=output_func)
             time.sleep(0.1)
 
-            read_now_15_dict = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+            with socket_lock:
+                read_now_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
             read_now_15 = read_now_15_dict[client]
-            time.sleep(0.1)
+            time.sleep(1)
 
             if (read_now_15-read_prev_15-32 == 64):
                 output_func("Data flushing ended successfully")
-                RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15, output_func=output_func)
+                with socket_lock:
+                    RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15, output_func=output_func)
                 time.sleep(0.1)
 
             else:
                 output_func(f"Problems occured durign the flushing of the last data with client {client}. Please check")
 
+
+def flush_client(socket, client, output_func):
+    with socket_lock:
+        read_prev = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
+        prev_val = read_prev.get(client)
+
+    if prev_val is None:
+        output_func(f"Flush skipped: no data from client {client}")
+        return
+
+    with socket_lock:
+        RCWrite(socket=socket, clients=client, addr=15, value=prev_val + 32, output_func=output_func)
+
+    time.sleep(0.1)
+
+    with socket_lock:
+        read_now = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
+        now_val = read_now.get(client)
+
+    if now_val is None:
+        output_func(f"Flush failed: no response from client {client}")
+        return
+
+    if now_val - prev_val - 32 == 64:
+        output_func(f"Periodic flush OK for client {client}")
+        with socket_lock:
+            RCWrite(socket=socket, clients=client, addr=15, value=prev_val, output_func=output_func)
+    else:
+        output_func(f"Flush ERROR for client {client}")
+
+def PeriodicFlushThread(
+    socket: zmq.Socket,
+    clients: List[bytes],
+    stop_event: threading.Event,
+    period: float,
+    output_func
+) -> None:
+
+    output_func("Periodic flush thread started")
+
+    while not stop_event.is_set():
+        start = time.time()
+
+        for client in clients:
+            if stop_event.is_set():
+                break
+            flush_client(socket, client, output_func)
+
+        elapsed = time.time() - start
+        sleep_time = max(0, period - elapsed)
+        time.sleep(sleep_time)
+
+    output_func("Periodic flush ended")
 
 
 def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_acquisition:str, run_id:Union[str, None], 
@@ -616,7 +676,7 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
         logger.critical("Select a timer value greater than 10 seconds")
         return
     if timer is None:
-        self.poutput("Acquisition will run forever. To stop press Ctrl-C")
+        output_func("Acquisition will run forever. To stop press Ctrl-C")
         return
     
     ###Creating the folder###
@@ -642,6 +702,15 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     #     return  
     
     ###Starting the acquisition###
+    stop_flush_event = threading.Event()
+
+    flush_thread = threading.Thread(
+        target=PeriodicFlushThread,
+        args=(socket, clients, stop_flush_event, 1.0, output_func),
+        daemon=False
+    )
+    flush_thread.start()
+
     c_lib.run.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     c_lib.run.restype = ctypes.c_int
     result_run = c_lib.run(timer, filepath, 0)
@@ -652,6 +721,9 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     else:    
         output_func("An error occured durign the acquisition. Please check")
         return
+    
+    stop_flush_event.set()
+    flush_thread.join()
     
     ###Disabling the channels###
     RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
