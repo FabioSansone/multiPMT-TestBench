@@ -702,14 +702,21 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     #     return  
     
     ###Starting the acquisition###
-    stop_flush_event = threading.Event()
 
-    flush_thread = threading.Thread(
-        target=PeriodicFlushThread,
-        args=(socket, clients, stop_flush_event, 3600.0, output_func),
-        daemon=False
-    )
-    flush_thread.start()
+    periodic_flush_activated = 0
+    read_trg_cond = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
+    all_second_bit_set = all((v >> 1) & 1 for v in read_trg_cond.values())
+    
+    if all_second_bit_set:
+        periodic_flush_activated = 1
+        stop_flush_event = threading.Event()
+
+        flush_thread = threading.Thread(
+            target=PeriodicFlushThread,
+            args=(socket, clients, stop_flush_event, 3600.0, output_func),
+            daemon=False
+        )
+        flush_thread.start()
 
     c_lib.run.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     c_lib.run.restype = ctypes.c_int
@@ -722,12 +729,13 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
         output_func("An error occured durign the acquisition. Please check")
         return
     
-    stop_flush_event.set()
-    flush_thread.join()
+    if (periodic_flush_activated == 1):
+        stop_flush_event.set()
+        flush_thread.join()
     
     ###Disabling the channels###
-    RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
-    time.sleep(0.1)
+    #RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
+    #time.sleep(0.1)
 
     ###Flushing last data###
     flush_thread = threading.Thread(

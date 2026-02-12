@@ -888,7 +888,7 @@ class Server(cmd2.Cmd):
 
         self.poutput(f"Starting threshold scan: run_id={run_id}, time_acq={time_acq}, frequency = {frequency}")
 
-        self._rc_write(19, 127)
+        #self._rc_write(19, 127)
             
         time.sleep(0.1)
         
@@ -950,7 +950,7 @@ class Server(cmd2.Cmd):
             self._rc_write(16, 0)
             time.sleep(0.1)
     
-        self._rc_write(19, 0)
+        #self._rc_write(19, 0)
             
         time.sleep(0.1)
 
@@ -1012,6 +1012,8 @@ class Server(cmd2.Cmd):
             self._rc_write(0, 0)
             time.sleep(0.1)
             self._rc_write(1, 0)
+            time.sleep(0.1)
+            self._rc_write(19, 0)
             time.sleep(0.1)
             for clients in self.clients_connected:
                 self.server.send_multipart([clients, json.dumps(command_exit).encode("utf-8")])
@@ -1317,6 +1319,8 @@ class Server(cmd2.Cmd):
     spe_equ_parser.add_argument("threshold_5", type=int, help="The threshold of the channel 5")
     spe_equ_parser.add_argument("threshold_6", type=int, help="The threshold of the channel 6")
     spe_equ_parser.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    spe_equ_parser.add_argument("gate_win", type=int, default=130, help="The extension of the gate signal (default=130)")
+    spe_equ_parser.add_argument("gate_delay", type=int, default=0, help="The delay of the gate signal (default=0)")
     spe_equ_parser.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(spe_equ_parser)
@@ -1326,7 +1330,7 @@ class Server(cmd2.Cmd):
         self._equal_gain_spe(args.pol_angle, args.near_w, args.far_w,
                             args.voltage_0, args.voltage_1, args.voltage_2, args.voltage_3, args.voltage_4, args.voltage_5, args.voltage_6,
                             args.threshold_0, args.threshold_1, args.threshold_2, args.threshold_3, args.threshold_4, args.threshold_5, args.threshold_6,
-                            args.timer_acq, args.run_id)
+                            args.timer_acq, args.run_id, delay_win=args.gate_delay, width_win=args.gate_win)
 
 
     
@@ -1440,6 +1444,8 @@ class Server(cmd2.Cmd):
     spe_equ_parser_multi.add_argument("threshold_6", type=int, help="The threshold of the channel 6")
     spe_equ_parser_multi.add_argument("flag_trg", type=int, help="Select 1 to enable the trigger acquisition mode, otherwise 0")
     spe_equ_parser_multi.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    spe_equ_parser_multi.add_argument("gate_win", type=int, default=130, help="The extension of the gate signal (default=130)")
+    spe_equ_parser_multi.add_argument("gate_delay", type=int, default=0, help="The delay of the gate signal (default=0)")
     spe_equ_parser_multi.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(spe_equ_parser_multi)
@@ -1449,7 +1455,7 @@ class Server(cmd2.Cmd):
         self._multi_equal_gain_spe(flag_trg=args.flag_trg, 
                             voltage_0=args.voltage_0, voltage_1=args.voltage_1, voltage_2=args.voltage_2, voltage_3=args.voltage_3, voltage_4=args.voltage_4, voltage_5=args.voltage_5, voltage_6=args.voltage_6,
                             threshold_0=args.threshold_0, threshold_1=args.threshold_1, threshold_2=args.threshold_2, threshold_3=args.threshold_3, threshold_4=args.threshold_4, threshold_5=args.threshold_5, threshold_6=args.threshold_6,
-                            time_acq=args.timer_acq, run_id=args.run_id)
+                            time_acq=args.timer_acq, run_id=args.run_id, delay_win=args.gate_delay, width_win=args.gate_win)
     
 
 
