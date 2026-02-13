@@ -365,7 +365,7 @@ class Client:
                 return False
             except Exception as e:
                 logger.critical(f"Unexpected error in command handler: {e}")
-                return False
+                continue
 
     def close(self):
         if self.client:
