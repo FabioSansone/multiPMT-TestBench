@@ -49,21 +49,24 @@ logger.addHandler(server_error_handler)
 class Server(cmd2.Cmd):
     "A terminal application to switch and interact with different multiPMT"
 
-    intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
-    prompt = "|Server> "
+    
+    
 
     def __init__(self, context) -> None:
         super().__init__()
         self.context = context
         self.main_id = None
         self.flag_status_file = 1 #ATTENZIONE - MODIFICARE PER INCLUDERE IL FILE (METTERE A 0)
-        self.flag_acq_multi = 1
+        self.flag_acq_multi = 0
         self.flag_test = None
         self.server = None
         self.clients_connected = []  
         self.instrument_manager = InstrumentsManager(self.poutput)
         self.batch = None   
         self.path_mbfile = None
+
+        self.intro = "Welcome to the control interface for the multiPMTs. Type ? or help to list commands."
+        self.prompt = "|Server> "
         
 
         self.discovery_stop_event = threading.Event()
@@ -89,19 +92,19 @@ class Server(cmd2.Cmd):
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             s.bind(('', DISCOVERY_PORT))
 
-            self.poutput(f"[UDP] Discovery listener started on port {DISCOVERY_PORT}")
+            #self.poutput(f"[UDP] Discovery listener started on port {DISCOVERY_PORT}")
 
             while not stop_event.is_set():
                 try:
                     s.settimeout(1.0)  # breve timeout per poter controllare stop_event
                     data, addr = s.recvfrom(1024)
                     if data == b"DISCOVER_SERVER":
-                        self.poutput(f"[UDP] Ricevuto DISCOVER_SERVER da {addr[0]}")
+                        #self.poutput(f"[UDP] Ricevuto DISCOVER_SERVER da {addr[0]}")
                         s.sendto(b"I am server", addr)
                 except socket.timeout:
                     continue
-                except Exception as e:
-                    self.poutput(f"[UDP] Errore durante la gestione del discovery: {e}")
+                #except Exception as e:
+                    #self.poutput(f"[UDP] Errore durante la gestione del discovery: {e}")
                     
 
     def _start_connection(self, port = DISCOVERY_PORT):
@@ -309,7 +312,7 @@ class Server(cmd2.Cmd):
 
     def _acquire_charge(self, suffix, flag_acq, run_id = None, timer=60):   
         HardwareResources.DMACommunication(socket=self.server, clients=self.clients_connected, suffix=suffix, flag_acquisition=flag_acq, 
-                                            run_id=run_id, timer=timer, batch=self.batch, output_func=self.poutput)
+                                            run_id=run_id, timer=timer, batch=self.batch, flag_trg=self.flag_acq_multi, output_func=self.poutput)
 
     def _acquire_rate(self, registers, flag_acq, suffix, run_id):
         HardwareResources.RCMonitoring(socket=self.server, clients=self.clients_connected, registers=registers, batch=self.batch, flag_acq=flag_acq, suffix=suffix, run_id = run_id, output_func=self.poutput)
@@ -563,7 +566,7 @@ class Server(cmd2.Cmd):
         time.sleep(0.1)
         self._rc_write(16, width_win)
         time.sleep(0.1)
-        for i in range(start_angle, start_angle+ampl, step):
+        for i in range(start_angle, step+ampl, step):
             try:
                 self._init_polarizer(i)
                 time.sleep(0.1)
@@ -573,12 +576,12 @@ class Server(cmd2.Cmd):
             except Exception as e:
                 self.poutput(f"Problem occured during the calibration of the polarizer: {e}")
    
-            self._rc_write(15, 0)
-            time.sleep(0.1)
-            self._rc_write(18, 0)
-            time.sleep(0.1)
-            self._rc_write(16, 0)
-            time.sleep(0.1)
+        self._rc_write(15, 0)
+        time.sleep(0.1)
+        self._rc_write(18, 0)
+        time.sleep(0.1)
+        self._rc_write(16, 0)
+        time.sleep(0.1)
 
     
 
@@ -658,23 +661,23 @@ class Server(cmd2.Cmd):
         self._rc_write(16, width_win)
         time.sleep(0.1)
 
-        if self._check_signal():
-            for i in range(near_start, 13):
-                for j in range(far_start, 13):
-                    self._init_wheels(i, j)
-                    time.sleep(0.1)
-                    try:
-                        self._acquire_charge(suffix = f"wheels_{i}_{j}", flag_acq="wheels_char", run_id=run_id, timer=time_acq)
-                    except Exception as e:
-                        self.poutput(f"Problem occurred during the wheels characterisation: {e}")
+        
+        for i in range(near_start, 13):
+            for j in range(far_start, 13):
+                self._init_wheels(i, j)
+                time.sleep(0.1)
+                try:
+                    self._acquire_charge(suffix = f"wheels_{i}_{j}", flag_acq="wheels_char", run_id=run_id, timer=time_acq)
+                except Exception as e:
+                    self.poutput(f"Problem occurred during the wheels characterisation: {e}")
 
 
-            self._rc_write(15, 0)
-            time.sleep(0.1)
-            self._rc_write(18, 0)
-            time.sleep(0.1)
-            self._rc_write(16, 0)
-            time.sleep(0.1)
+        self._rc_write(15, 0)
+        time.sleep(0.1)
+        self._rc_write(18, 0)
+        time.sleep(0.1)
+        self._rc_write(16, 0)
+        time.sleep(0.1)
 
 
 
@@ -888,7 +891,7 @@ class Server(cmd2.Cmd):
 
         self.poutput(f"Starting threshold scan: run_id={run_id}, time_acq={time_acq}, frequency = {frequency}")
 
-        #self._rc_write(19, 127)
+        self._rc_write(19, 127)
             
         time.sleep(0.1)
         
@@ -950,7 +953,7 @@ class Server(cmd2.Cmd):
             self._rc_write(16, 0)
             time.sleep(0.1)
     
-        #self._rc_write(19, 0)
+        self._rc_write(19, 0)
             
         time.sleep(0.1)
 
@@ -1265,13 +1268,15 @@ class Server(cmd2.Cmd):
     pol_parser.add_argument("far_w", type=int, help="The position of the far wheel")
     pol_parser.add_argument("voltage_ch", type=int, help="The voltage of the channel")
     pol_parser.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    pol_parser.add_argument("delay_trg", type=int, help="The delay of the trigger window")
+    pol_parser.add_argument("win_trg", type=int, help="The time exstension of the trigger window")
     pol_parser.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(pol_parser)
     @cmd2.with_category("ACQ")
     @command_guard('characterization')
     def do_polarizer_acq(self, args: argparse.Namespace) -> None:
-        self._calib_polarizer(args.start_angle, args.step_angle, args.period_angle, args.near_w, args.far_w, args.voltage_ch, args.timer_acq, args.run_id)
+        self._calib_polarizer(args.start_angle, args.step_angle, args.period_angle, args.near_w, args.far_w, args.voltage_ch, args.timer_acq, args.run_id, args.delay_trg, args.win_trg)
 
 
     pedestal_parser = argparse.ArgumentParser()
@@ -1290,13 +1295,15 @@ class Server(cmd2.Cmd):
     spe_parser.add_argument("far_w", type=int, help="The position of the far wheel")
     spe_parser.add_argument("voltage_ch", type=int, help="The voltage of the channel")
     spe_parser.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    spe_parser.add_argument("delay_trg", type=int, help="The delay of the trigger window")
+    spe_parser.add_argument("win_trg", type=int, help="The time exstension of the trigger window")
     spe_parser.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(spe_parser)
     @cmd2.with_category("ACQ")
     @command_guard('characterization')
     def do_spe_acq(self, args: argparse.Namespace) -> None:
-        self._spe_pmt(args.pol_angle, args.near_w, args.far_w, args.voltage_ch, args.timer_acq, args.run_id)
+        self._spe_pmt(args.pol_angle, args.near_w, args.far_w, args.voltage_ch, args.timer_acq, args.run_id, args.delay_trg, args.win_trg)
 
     
 
@@ -1342,6 +1349,8 @@ class Server(cmd2.Cmd):
     gain_parser.add_argument("voltage_end", type=int, help="The end voltage value for the gain measurement")
     gain_parser.add_argument("voltage_step", type=int, help="The step voltage for the gain measurement")
     gain_parser.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    gain_parser.add_argument("delay_trg", type=int, help="The delay of the trigger window")
+    gain_parser.add_argument("win_trg", type=int, help="The time exstension of the trigger window")
     gain_parser.add_argument("run_id", type=str, help="The run id")
 
 
@@ -1349,7 +1358,7 @@ class Server(cmd2.Cmd):
     @cmd2.with_category("ACQ")
     @command_guard('characterization')
     def do_gain_acq(self, args: argparse.Namespace) -> None:
-        self._gain_pmt(args.pol_angle, args.near_w, args.far_w, args.voltage_start, args.voltage_end, args.voltage_step, args.timer_acq, args.run_id)
+        self._gain_pmt(args.pol_angle, args.near_w, args.far_w, args.voltage_start, args.voltage_end, args.voltage_step, args.timer_acq, args.run_id, args.delay_trg, args.win_trg)
 
     wheels_parser = argparse.ArgumentParser()
     wheels_parser.add_argument("pol_angle", type=int, help="The angle of the polarizer")
@@ -1357,13 +1366,15 @@ class Server(cmd2.Cmd):
     wheels_parser.add_argument("far_start", type=int, help="The starting position of the far wheel")
     wheels_parser.add_argument("voltage_channels", type=int, help="The voltage value for the wheels characterisation")
     wheels_parser.add_argument("timer_acq", type=int, help="The timer of each acquisition")
+    wheels_parser.add_argument("delay_trg", type=int, help="The delay of the trigger window")
+    wheels_parser.add_argument("win_trg", type=int, help="The time exstension of the trigger window")
     wheels_parser.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(wheels_parser)
     @cmd2.with_category("ACQ")
     @command_guard('characterization')
     def do_wheels_char(self, args: argparse.Namespace) -> None:
-        self._wheels_characterisation(args.pol_angle, args.near_start, args.far_start, args.voltage_channels, args.timer_acq, args.run_id)
+        self._wheels_characterisation(args.pol_angle, args.near_start, args.far_start, args.voltage_channels, args.timer_acq, args.run_id, args.delay_trg, args.win_trg)
 
 
     thr_parser = argparse.ArgumentParser()

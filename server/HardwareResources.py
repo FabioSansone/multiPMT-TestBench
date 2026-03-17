@@ -33,11 +33,19 @@ FOLDER_ACQ = {
 }
 
 
+
+
 #####################################
 #RUN CONTROL COMMUNICATION FUNCTIONS#
 #####################################
 
-def RCWrite(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, value: int, output_func: Callable[[str], None]) -> None:
+def RCWrite(
+    socket: zmq.Socket,
+    clients: Union[List[bytes], bytes],
+    addr: int,
+    value: int,
+    output_func: Callable[[str], None]
+) -> None:
     """
     Sends an RC write command to connected clients.
 
@@ -54,15 +62,15 @@ def RCWrite(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, v
         outputs the result using the provided output function.
     """
     command_rc_write = {
-            "type": "rc_command",
-            "command": "write_address",
-            "address": addr,
-            "value": value
-        }
-    
+        "type": "rc_command",
+        "command": "write_address",
+        "address": addr,
+        "value": value
+    }
+
     if isinstance(clients, bytes):
         clients = [clients]
-        
+
     logger.info(f"Sending RC command to client: {command_rc_write}")
 
     for client in clients:
@@ -70,69 +78,89 @@ def RCWrite(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, v
         try:
             write = socket.recv_multipart()
             response = json.loads(write[1].decode("utf-8"))
+
             if write[0] == client and response.get("response") == "rc_write":
                 output_func(response.get("result"))
+
         except Exception as e:
             output_func(f"Problem occured writing RC registers: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the RC response.")
 
 
-def RCRead(socket:zmq.Socket, clients: Union[List[bytes], bytes], addr : int, output_func: Callable[[str], None]) -> None:
-    """
-    Sends an RC read command to connected clients.
 
-    Parameters:
-        socket (zmq.Socket): The ZMQ socket used to send the command.
-        clients (List[bytes]): The list of connected client IDs.
-        addr (int): The address to read.
-        output_func (Callable[[str], None]): Function to output messages (e.g., poutput).
-
-    Behavior:
-        For each connected client, the function sends a JSON-encoded RC read command.
-        It then waits for a response and, if the response indicates a successful RC red,
-        outputs the result using the provided output function.
-    """
-    
+def RCRead(
+    socket: zmq.Socket,
+    clients: Union[List[bytes], bytes],
+    addr: int,
+    output_func: Callable[[str], None]
+) -> dict[bytes, Union[int, None]]:
     client_rc_read_values = {}
-    
+
     if isinstance(clients, bytes):
         clients = [clients]
-    
+
     command_rc_read = {
-            "type": "rc_command",
-            "command": "read_address",
-            "address": addr,
-        }
-    logger.info(f"Sending RC command to client: {command_rc_read}")
+        "type": "rc_command",
+        "command": "read_address",
+        "address": addr,
+    }
+
+    logger.info(f"Sending RC command to clients: {command_rc_read}")
 
     for client in clients:
-        socket.send_multipart([client, json.dumps(command_rc_read).encode("utf-8")])
         try:
+            socket.send_multipart([client, json.dumps(command_rc_read).encode("utf-8")])
+
             read = socket.recv_multipart()
             response = json.loads(read[1].decode("utf-8"))
-            if read[0] == client and response.get("response") == "rc_read":
-                value = response.get("result")
-                if value is not None:
-                    output_func(f"It was possible to read the register {addr} with value {value}")
-                    client_rc_read_values[client] = int(value)
-                else:
-                    output_func("It was not possible to read the selected register")
-                    client_rc_read_values[client] = int(value)
-        except Exception as e:
-            output_func(f"Problem occured writing RC registers: {e}")
+
+            if read[0] != client:
+                output_func(f"Unexpected response from client {read[0]!r}, expected {client!r}")
+                client_rc_read_values[client] = None
+                continue
+
+            if response.get("response") != "rc_read":
+                output_func(f"Unexpected response type for client {client}: {response}")
+                client_rc_read_values[client] = None
+                continue
+
+            value = response.get("result")
+            if value is None:
+                output_func(f"It was not possible to read register {addr} from client {client}")
+                client_rc_read_values[client] = None
+                continue
+
+            client_rc_read_values[client] = int(value)
+            output_func(f"It was possible to read register {addr} with value {value} from client {client}")
+
         except json.JSONDecodeError:
-            output_func("Failed to decode the RC response.")
-            
+            output_func(f"Failed to decode RC response from client {client}")
+            client_rc_read_values[client] = None
+
+        except Exception as e:
+            output_func(f"Problem occurred reading RC register from client {client}: {e}")
+            client_rc_read_values[client] = None
+
     return client_rc_read_values
 
-def RCMonitoring(socket:zmq.Socket, clients: List[bytes], registers: Union[List[int], str], batch:int, flag_acq:str, suffix: str, run_id: str, output_func: Callable[[str], None]):
 
+def RCMonitoring(
+    socket: zmq.Socket,
+    clients: List[bytes],
+    registers: Union[List[int], str],
+    batch: int,
+    flag_acq: str,
+    suffix: str,
+    run_id: str,
+    output_func: Callable[[str], None]
+):
     command_rc_monitoring = {
         "type": "rc_command",
         "command": "rc_monitoring",
         "regs": registers,
     }
+
     logger.info(f"Sending RC command to client: {command_rc_monitoring}")
 
     for client in clients:
@@ -140,13 +168,22 @@ def RCMonitoring(socket:zmq.Socket, clients: List[bytes], registers: Union[List[
         try:
             mon = socket.recv_multipart()
             response = json.loads(mon[1].decode("utf-8"))
+
             if mon[0] == client and response.get("response") == "rc_mon":
-                MonitoringProcessing.SaveDataCSV(client=client, data=response.get("result"), number=batch, flag_acq=flag_acq, suffix=suffix, run_id=run_id)
-    
+                MonitoringProcessing.SaveDataCSV(
+                    client=client,
+                    data=response.get("result"),
+                    number=batch,
+                    flag_acq=flag_acq,
+                    suffix=suffix,
+                    run_id=run_id
+                )
+
         except Exception as e:
             output_func(f"Problem occured acquiring RC registers: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the RC response.")
+
  
 
 
@@ -352,8 +389,13 @@ def HVPowerOff(socket:zmq.Socket, clients: List[bytes], port:str, channels:Union
 
 
 
-def HVCalibration(socket:zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], output_func: Callable[[str], None]) -> None:
-
+def HVCalibration(
+    socket: zmq.Socket,
+    clients: List[bytes],
+    port: str,
+    channels: Union[List[str], str],
+    output_func: Callable[[str], None]
+) -> None:
     """
     Sends a high-voltage calibration command to the specified channels.
 
@@ -368,15 +410,16 @@ def HVCalibration(socket:zmq.Socket, clients: List[bytes], port:str, channels:Un
         Notifies the user that calibration is starting, sends a JSON-encoded calibration command,
         and then waits for the client response. The result (success or failure) is then outputted.
     """
-
-    output_func("Starting the calibration of the channels selected. For more information on the status, check the client log")
+    output_func(
+        "Starting the calibration of the channels selected. "
+        "For more information on the status, check the client log"
+    )
 
     command_hv_calib = {
         "type": "hv_command",
         "command": "hv_calibration",
         "channels": channels,
         "port": port,
-
     }
 
     for client in clients:
@@ -384,14 +427,23 @@ def HVCalibration(socket:zmq.Socket, clients: List[bytes], port:str, channels:Un
         try:
             hv_calib = socket.recv_multipart()
             response_calib = json.loads(hv_calib[1].decode("utf-8"))
+
             if hv_calib[0] == client and response_calib.get("result"):
-                output_func("It was possible to calibrate all the channels selected. See the client log for more details")
+                output_func(
+                    "It was possible to calibrate all the channels selected. "
+                    "See the client log for more details"
+                )
             else:
-                output_func("It was not possible to calibrate all the channels selected. See the client log for more details")
+                output_func(
+                    "It was not possible to calibrate all the channels selected. "
+                    "See the client log for more details"
+                )
+
         except Exception as e:
             output_func(f"HV calibration problem occured: {e}")
         except json.JSONDecodeError:
             output_func("Failed to decode the calibration response.")
+
 
 
 def HVGetSerialFEB(socket: zmq.Socket, clients: List[bytes], port:str, channels:Union[List[str], str], batch:int, output_func: Callable[[str], None]) -> None:
@@ -578,41 +630,41 @@ def CompileCLibrary(force_compile=False):
 
     return output_lib
 
-def FlushThread(socket:zmq.Socket, clients: List[bytes], output_func: Callable[[str], None]) -> None:
-    
+def FlushThread(socket: zmq.Socket, clients: List[bytes], output_func: Callable[[str], None]) -> None:
     time.sleep(20)
-    with socket_lock:
-        RCWrite(socket=socket, clients=clients, addr=15, value=0, output_func=output_func)
-        time.sleep(0.1)
-        RCWrite(socket=socket, clients=clients, addr=16, value=0, output_func=output_func)
-        time.sleep(0.1)
-        RCWrite(socket=socket, clients=clients, addr=18, value=0, output_func=output_func)
-        time.sleep(0.1)
-    
+
     for client in clients:
         with socket_lock:
             read_prev_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
-        read_prev_15 = read_prev_15_dict[client]
+
+        read_prev_15 = read_prev_15_dict.get(client)
         time.sleep(0.1)
 
-        if read_prev_15 is not None:
+        if read_prev_15 is None:
+            output_func(f"Flush skipped: no valid read from client {client}")
+            continue
+
+        with socket_lock:
+            RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15 + 32, output_func=output_func)
+        time.sleep(1)
+
+        with socket_lock:
+            read_now_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
+
+        read_now_15 = read_now_15_dict.get(client)
+        time.sleep(1)
+
+        if read_now_15 is None:
+            output_func(f"Problems occurred during flushing with client {client}: missing final read")
+            continue
+
+        if read_now_15 - read_prev_15 - 32 == 64:
+            output_func(f"Data flushing ended successfully for client {client}")
             with socket_lock:
-                RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15+32, output_func=output_func)
+                RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15, output_func=output_func)
             time.sleep(0.1)
-
-            with socket_lock:
-                read_now_15_dict = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
-            read_now_15 = read_now_15_dict[client]
-            time.sleep(1)
-
-            if (read_now_15-read_prev_15-32 == 64):
-                output_func("Data flushing ended successfully")
-                with socket_lock:
-                    RCWrite(socket=socket, clients=client, addr=15, value=read_prev_15, output_func=output_func)
-                time.sleep(0.1)
-
-            else:
-                output_func(f"Problems occured durign the flushing of the last data with client {client}. Please check")
+        else:
+            output_func(f"Problems occurred during flushing with client {client}. Please check")
 
 
 def flush_client(socket, client, output_func):
@@ -627,7 +679,7 @@ def flush_client(socket, client, output_func):
     with socket_lock:
         RCWrite(socket=socket, clients=client, addr=15, value=prev_val + 32, output_func=output_func)
 
-    time.sleep(0.1)
+    time.sleep(1)
 
     with socket_lock:
         read_now = RCRead(socket=socket, clients=client, addr=15, output_func=output_func)
@@ -670,7 +722,7 @@ def PeriodicFlushThread(
 
 
 def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_acquisition:str, run_id:Union[str, None], 
-                     timer:int, batch:int, output_func: Callable[[str], None]) -> None:
+                     timer:int, batch:int, flag_trg:int, output_func: Callable[[str], None]) -> None:
     
     if timer is not None and timer < 10:
         logger.critical("Select a timer value greater than 10 seconds")
@@ -689,10 +741,6 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     lib_path = CompileCLibrary(force_compile=True)
     c_lib = ctypes.CDLL(str(lib_path))
 
-    ###Enabling the channels###
-    RCWrite(socket=socket, clients=clients, addr=19, value=127, output_func=output_func)  
-    time.sleep(0.1)
-
     ###Starting the Evproducer###
     # c_lib.start_control.argtypes = []
     # c_lib.start_control.restype = ctypes.c_int
@@ -706,8 +754,16 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
     periodic_flush_activated = 0
     read_trg_cond = RCRead(socket=socket, clients=clients, addr=15, output_func=output_func)
     all_second_bit_set = all((v >> 1) & 1 for v in read_trg_cond.values())
-    
+
+    ###Enabling the channels###
     if all_second_bit_set:
+        RCWrite(socket=socket, clients=clients, addr=19, value=255, output_func=output_func)  
+        time.sleep(0.1)
+    else:
+        RCWrite(socket=socket, clients=clients, addr=19, value=127, output_func=output_func)  
+        time.sleep(0.1)
+    
+    if all_second_bit_set and flag_trg:
         periodic_flush_activated = 1
         stop_flush_event = threading.Event()
 
@@ -734,8 +790,8 @@ def DMACommunication(socket:zmq.Socket, clients: List[bytes], suffix:str, flag_a
         flush_thread.join()
     
     ###Disabling the channels###
-    #RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
-    #time.sleep(0.1)
+    RCWrite(socket=socket, clients=clients, addr=19, value=0, output_func=output_func)  
+    time.sleep(0.1)
 
     ###Flushing last data###
     flush_thread = threading.Thread(

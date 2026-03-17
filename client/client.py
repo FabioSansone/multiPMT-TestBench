@@ -159,7 +159,7 @@ class Client:
                                     time.sleep(0.1)
                                     self.rc.write(10, 65)
                                     time.sleep(0.1)
-                                    self.rc.write(19, 127)
+                                    self.rc.write(19, 0)
                                     time.sleep(0.1)
                                     self.rc.write(15, 0) 
                                     time.sleep(0.1)

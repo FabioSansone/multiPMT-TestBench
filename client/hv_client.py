@@ -8,6 +8,7 @@ import struct
 import time
 import numpy as np
 import datetime
+import traceback
 
 hv_logger = logging.getLogger("Client")
 hv_logger.info("Avviso da pymodbus dentro hv.py")
@@ -68,6 +69,14 @@ class HV:
     def _safe_write(self, addr, value, slave, desc="unknown"):
         try:
             rr = self.client.write_register(address=addr, value=value, slave=slave)
+            if rr is None or rr.isError():
+                raise HVReadError(f"Invalid response when writing {desc} at {hex(addr)}")
+        except ModbusException as e:
+            raise HVReadError(f"Exception during write of {desc}: {e}")
+
+    def _safe_write_multiple(self, addr, values, slave, desc="unknown"):
+        try:
+            rr = self.client.write_registers(address=addr, values=values, slave=slave)
             if rr is None or rr.isError():
                 raise HVReadError(f"Invalid response when writing {desc} at {hex(addr)}")
         except ModbusException as e:
@@ -364,14 +373,14 @@ class HV:
         slope = int(slope * 10000)
         lsb = (slope & 0xFFFF)
         msb = (slope >> 16) & 0xFFFF
-        self._safe_write(addr=0x30, value=[lsb, msb], slave=slave, desc="write slop")
+        self._safe_write_multiple(addr=0x30, values=[lsb, msb], slave=slave, desc="write slop")
 
     def writeCalibOffset(self, offset, slave=None):
         slave = self.addr if slave is None else slave
         offset = int(offset * 10000)
         lsb = (offset & 0xFFFF)
         msb = (offset >> 16) & 0xFFFF
-        self._safe_write(addr=0x32, value=[lsb, msb], slave=slave, desc="write offset")
+        self._safe_write_multiple(addr=0x32, values=[lsb, msb], slave=slave, desc="write offset")
     
     def writeCalibDiscr(self, discr, slave=None):
         slave = self.addr if slave is None else slave
@@ -391,8 +400,13 @@ class HV:
         hv_logger.warning('WARNING: erasing current calibration values')
         
 
-        self.writeCalibSlope(1)
-        self.writeCalibOffset(0)
+        try:
+            self.writeCalibSlope(1)
+            self.writeCalibOffset(0)
+        except Exception as e:
+            hv_logger.error(f"Error in initial calibration write: {e}")
+            hv_logger.error(traceback.format_exc())
+            return False
 
         Vexpect = [25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400]
         Vread = []
