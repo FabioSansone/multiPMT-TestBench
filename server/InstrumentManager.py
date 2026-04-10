@@ -1,6 +1,7 @@
 from pylablib.devices import Thorlabs
 from typing import Callable
 import logging
+import pyvisa as visa
 
 logger = logging.getLogger("Server")
 
@@ -152,3 +153,29 @@ class InstrumentsManager:
             self.output(f"Error: {e}")
             if self.polarizer:
                 self.polarizer.close()
+
+
+class Agilent:
+
+    def __init__(self, dev= u'ASRL/dev/ttyUSB0::INSTR', br = 57600, t_o = 60):
+
+        self.rm = visa.ResourceManager('@py')
+        
+        self.ag = self.rm.open_resource(dev)
+        self.ag.baud_rate = br
+        self.ag.data_bits = 8
+        self.ag.parity = visa.constants.Parity.none #forse va messo tra parentesi
+        self.ag.stop_bits = visa.constants.StopBits.one
+
+        self.ag.set_visa_attribute(visa.constants.VI_ATTR_ASRL_FLOW_CNTRL,
+                                   visa.constants.VI_ASRL_FLOW_DTR_DSR)
+        
+        self.ag.write_termination = '\n'
+        self.ag.read_termination = '\n'
+
+        self.ag.timeout = t_o*1000
+
+        print(self.ag.query('*IDN?'))
+
+if __name__ == "__main__":
+    agilent = Agilent()

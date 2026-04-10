@@ -12,7 +12,7 @@ from bme280 import BME280
 from tla2024 import TLA2024
 from hv_client import HV
 
-IIC_BUS = 1
+IIC_BUS = 0
 CHIP_ADDRESS_BME = 0x76
 CHIP_ADDRESS_TLA = 0x49
 REGS = [x for x in range(20, 27)]

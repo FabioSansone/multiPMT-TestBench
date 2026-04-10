@@ -8,6 +8,7 @@ import struct
 import time
 import numpy as np
 import datetime
+import traceback
 
 hv_logger = logging.getLogger("pymodbus")
 hv_logger.warning("Avviso da pymodbus dentro hv.py")
@@ -390,16 +391,25 @@ class HV:
 
         hv_logger.warning('WARNING: erasing current calibration values')
         
+        try:
+            self.writeCalibSlope(1)
+            self.writeCalibOffset(0)
+        except Exception as e:
+            hv_logger.error(f"Error in initial calibration write: {e}")
+            hv_logger.error(traceback.format_exc())
+            return False
 
-        self.writeCalibSlope(1)
-        self.writeCalibOffset(0)
 
         Vexpect = [25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400]
         Vread = []
         
         hv_logger.warning('set fast rampup/rampdown rate (25 V/s)')
-        self.setRateRampup(25)
-        self.setRateRampdown(25)
+        try:
+            self.setRateRampup(25)
+            self.setRateRampdown(25)
+        except Exception as e:
+            hv_logger.error(f"Error setting ramp rates: {e}")
+            return False
         
         hv_logger.warning('start calibration with status=DOWN Vset=10V')
         self.setVoltageSet(10)

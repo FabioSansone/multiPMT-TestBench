@@ -848,13 +848,17 @@ class Server(cmd2.Cmd):
     def _multi_equal_gain_spe(self, flag_trg, 
                         voltage_0, voltage_1, voltage_2, voltage_3, voltage_4, voltage_5, voltage_6,
                         threshold_0, threshold_1, threshold_2, threshold_3, threshold_4, threshold_5, threshold_6,
-                        time_acq, run_id="equal_spe", delay_win=0, width_win=130):
+                        time_acq, run_id="equal_spe", delay_win=0, width_win=130, trg_polarity = 0):
         
         """Function to acquire SPE spectrum at equal gains for PMTs"""
 
         if flag_trg:
-            self._rc_write(15, 2)
-            time.sleep(0.1)
+            if trg_polarity:
+                self._rc_write(15, 258)
+                time.sleep(0.1)
+            else:
+                self._rc_write(15, 2)
+                time.sleep(0.1)
             self._rc_write(18, delay_win)
             time.sleep(0.1)
             self._rc_write(16, width_win)
@@ -1251,7 +1255,7 @@ class Server(cmd2.Cmd):
 
     @cmd2.with_argparser(daq_charge)
     @cmd2.with_category("DAQ")
-    @command_guard('characterization')
+    @command_guard('safety_only')
     def do_acquire(self, args: argparse.Namespace) -> None:
         """Function to acquire the charges from the channels that are on"""
         self._acquire_charge(suffix=args.suffix, timer=args.timer, flag_acq=args.flag, run_id=args.run_id)
@@ -1457,6 +1461,7 @@ class Server(cmd2.Cmd):
     spe_equ_parser_multi.add_argument("timer_acq", type=int, help="The timer of each acquisition")
     spe_equ_parser_multi.add_argument("gate_win", type=int, default=130, help="The extension of the gate signal (default=130)")
     spe_equ_parser_multi.add_argument("gate_delay", type=int, default=0, help="The delay of the gate signal (default=0)")
+    spe_equ_parser_multi.add_argument("--change_trg_polarity", type=int, default=0, help="Select 1 to acquire using the opposite trigger polarity (default=0)")
     spe_equ_parser_multi.add_argument("run_id", type=str, help="The run id")
 
     @cmd2.with_argparser(spe_equ_parser_multi)
@@ -1466,7 +1471,7 @@ class Server(cmd2.Cmd):
         self._multi_equal_gain_spe(flag_trg=args.flag_trg, 
                             voltage_0=args.voltage_0, voltage_1=args.voltage_1, voltage_2=args.voltage_2, voltage_3=args.voltage_3, voltage_4=args.voltage_4, voltage_5=args.voltage_5, voltage_6=args.voltage_6,
                             threshold_0=args.threshold_0, threshold_1=args.threshold_1, threshold_2=args.threshold_2, threshold_3=args.threshold_3, threshold_4=args.threshold_4, threshold_5=args.threshold_5, threshold_6=args.threshold_6,
-                            time_acq=args.timer_acq, run_id=args.run_id, delay_win=args.gate_delay, width_win=args.gate_win)
+                            time_acq=args.timer_acq, run_id=args.run_id, delay_win=args.gate_delay, width_win=args.gate_win, trg_polarity=args.change_trg_polarity)
     
 
 
